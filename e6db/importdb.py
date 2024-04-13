@@ -9,36 +9,36 @@ import polars as pl
 from polars import col
 
 
-def convert_db_export_to_parquet(dumps_path, min_freq=2):
+@pl.StringCache()
+def convert_db_export_to_parquet(dumps_path, out_path=None, min_freq=2):
     dumps_path = Path(dumps_path)
     paths = get_csv_paths(dumps_path)
-    parquets_dir = dumps_path.parent / "parquets"
-    parquets_dir.mkdir(exist_ok=True)
+    out_path = dumps_path if out_path is None else Path(out_path)
 
     logging.info("Reading tag CSVs...")
     tags, aliases, impls = read_tags_csvs(paths)
-    post_parquet_paths, tag_freqs = read_posts_csv(paths["posts"], parquets_dir)
+    post_parquet_paths, tag_freqs = read_posts_csv(paths["posts"], out_path)
+
     logging.info("Normalizing tags...")
-    used_tags, tag2index, impl_mapped, rejtag_impls_csq_mapped = normalize_tag_list(
+    tags, tag2index, impl_mapped, rejtag_impls_csq_mapped = normalize_tag_list(
         tag_freqs, tags, aliases, impls, min_freq=min_freq
     )
 
-    used_tags.with_columns(col("tag").cast(pl.String)).write_parquet(
-        parquets_dir / "tags.parquet", compression="zstd"
+    tags.with_columns(col("tag").cast(pl.String)).write_parquet(
+        out_path / "tags.parquet", compression="zstd"
     )
-    tag2index.write_parquet(parquets_dir / "tag2index.parquet", compression="zstd")
+    tag2index.write_parquet(out_path / "tag2index.parquet", compression="zstd")
 
     all_posts = post_process_posts(
         post_parquet_paths, tag2index, rejtag_impls_csq_mapped, impl_mapped
     )
 
     logging.info("Writing posts.parquet...")
-    all_posts.write_parquet(parquets_dir / "posts.parquet", compression="zstd")
+    all_posts.write_parquet(out_path / "posts.parquet", compression="zstd")
 
-    return used_tags, all_posts
+    return tags, all_posts
 
 
-@pl.StringCache()
 def read_tags_csvs(paths, alias_implications=True):
     """Reads tags, tag_aliases, tag_implications CSVs"""
     tags = pl.read_csv(
@@ -174,7 +174,6 @@ def normalize_tag_list(tag_freqs, tags, aliases, impls, min_freq=2):
     return used_tags, tag2index, impl_mapped, rejtag_impls_csq_mapped
 
 
-@pl.StringCache()
 def read_posts_csv(posts_csv_path, out_path, batch_size=1 << 18, write_parquets=True):
     """First pass on posts csv.
 
@@ -439,5 +438,7 @@ if __name__ == "__main__":
     import sys
 
     logging.root.setLevel(logging.INFO)
-    data_dir = sys.argv.get(1, "./data")
-    convert_db_export_to_parquet(data_dir)
+    argv = {i: x for i, x in enumerate(sys.argv)}
+    data_dir = argv.get(1, "./data")
+    out_path = argv.get(2, data_dir)
+    convert_db_export_to_parquet(data_dir, out_path=out_path)
