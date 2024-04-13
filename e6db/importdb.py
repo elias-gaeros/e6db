@@ -174,7 +174,13 @@ def normalize_tag_list(tag_freqs, tags, aliases, impls, min_freq=2):
     return used_tags, tag2index, impl_mapped, rejtag_impls_csq_mapped
 
 
-def read_posts_csv(posts_csv_path, out_path, batch_size=1 << 18, write_parquets=True):
+def read_posts_csv(
+    posts_csv_path,
+    out_path,
+    batch_size=1 << 18,
+    write_parquets=True,
+    rating_to_tag=True,
+):
     """First pass on posts csv.
 
     Parse textual data from CSV chunks and store them as parquet files.
@@ -235,7 +241,7 @@ def read_posts_csv(posts_csv_path, out_path, batch_size=1 << 18, write_parquets=
         col("md5").str.decode("hex"),
         col("image_width").cast(pl.UInt16),
         col("image_height").cast(pl.UInt16),
-        col("tag_string").str.split(" ").cast(pl.List(pl.Categorical)),
+        col("tag_string").str.split(" "),
         col("fav_count").cast(pl.UInt16),
         col("comment_count").cast(pl.UInt16),
         col("up_score").cast(pl.UInt16),
@@ -243,6 +249,14 @@ def read_posts_csv(posts_csv_path, out_path, batch_size=1 << 18, write_parquets=
     reader = pl.read_csv_batched(
         posts_csv_path, columns=column_selections, dtypes=schema, batch_size=batch_size
     )
+
+    if rating_to_tag is True:
+        rating_to_tag = pl.DataFrame(
+            dict(
+                rating=list("sqe"),
+                rating_tag=["rating_safe", "rating_questionable", "rating_explicit"],
+            )
+        )
 
     tag_freqs = None
     batch_idx = 0
@@ -263,8 +277,16 @@ def read_posts_csv(posts_csv_path, out_path, batch_size=1 << 18, write_parquets=
             )
             # Projection
             .with_columns(*columns_remaps)
-            .collect(streaming=True)
         )
+        if isinstance(rating_to_tag, pl.DataFrame):
+            chunk_df = (
+                chunk_df.join(rating_to_tag.lazy(), how="left", on="rating")
+                .with_columns(col("tag_string").list.concat([col("rating_tag")]))
+                .drop("rating_tag")
+            )
+        chunk_df = chunk_df.with_columns(
+            col("tag_string").cast(pl.List(pl.Categorical))
+        ).collect(streaming=True)
 
         if write_parquets:
             parquet_path = out_path / f"posts-{batch_idx:03}.parquet"
