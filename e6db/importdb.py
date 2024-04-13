@@ -10,7 +10,9 @@ from polars import col
 
 
 @pl.StringCache()
-def convert_db_export_to_parquet(dumps_path, out_path=None, min_freq=2):
+def convert_db_export_to_parquet(
+    dumps_path, out_path=None, min_freq=2, tag_blacklist=("invalid_tag",)
+):
     dumps_path = Path(dumps_path)
     paths = get_csv_paths(dumps_path)
     out_path = dumps_path if out_path is None else Path(out_path)
@@ -27,7 +29,9 @@ def convert_db_export_to_parquet(dumps_path, out_path=None, min_freq=2):
     tags.with_columns(col("tag").cast(pl.String)).write_parquet(
         out_path / "tags.parquet", compression="zstd"
     )
-    tag2index.write_parquet(out_path / "tag2index.parquet", compression="zstd")
+    tag2index.with_columns(col("tag").cast(pl.String)).write_parquet(
+        out_path / "tag2idx.parquet", compression="zstd"
+    )
 
     all_posts = post_process_posts(
         post_parquet_paths, tag2index, rejtag_impls_csq_mapped, impl_mapped
@@ -109,7 +113,7 @@ def read_tags_csvs(paths, alias_implications=True):
     return tags, aliases, impls
 
 
-def normalize_tag_list(tag_freqs, tags, aliases, impls, min_freq=2):
+def normalize_tag_list(tag_freqs, tags, aliases, impls, min_freq=2, blacklist=None):
     """Filter, augment and normalize the (tag, freq) list accumulated from the posts table"""
     # Filter tags that have actual use
     used_tags = (
@@ -119,8 +123,14 @@ def normalize_tag_list(tag_freqs, tags, aliases, impls, min_freq=2):
         .select(tag=col("consequent_name").fill_null(col("tag")), freq="freq")
         .group_by("tag")
         .sum()
-        # Join categories
-        .join(tags.lazy(), how="left", left_on="tag", right_on="name", validate="1:1")
+    )
+    if blacklist:
+        used_tags = used_tags.filter(~col("tag").is_in(blacklist))
+    # Join categories
+    used_tags = (
+        used_tags.join(
+            tags.lazy(), how="inner", left_on="tag", right_on="name", validate="1:1"
+        )
         .sort("freq", descending=True)
         .filter(col("freq") >= min_freq)
         .collect()
