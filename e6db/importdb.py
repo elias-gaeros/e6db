@@ -1,5 +1,7 @@
 import re
 import datetime
+import json
+import gzip
 import logging
 from pathlib import Path
 
@@ -17,27 +19,64 @@ def convert_db_export_to_parquet(
     paths = get_csv_paths(dumps_path)
     out_path = dumps_path if out_path is None else Path(out_path)
 
-    logging.info("Reading tag CSVs...")
+    logging.info("Reading tag CSVs")
     tags, aliases, impls = read_tags_csvs(paths)
     post_parquet_paths, tag_freqs = read_posts_csv(paths["posts"], out_path)
 
-    logging.info("Normalizing tags...")
+    logging.info("Normalizing tags")
     tags, tag2index, impl_mapped, rejtag_impls_csq_mapped = normalize_tag_list(
         tag_freqs, tags, aliases, impls, min_freq=min_freq
     )
 
+    logging.info("Writing tags indexes")
     tags.with_columns(col("tag").cast(pl.String)).write_parquet(
         out_path / "tags.parquet", compression="zstd"
     )
+    with gzip.open(out_path / "tags.txt.gz", "wt") as fd:
+        fd.writelines(f"{t}\n" for t in tags["tag"])
+
     tag2index.with_columns(col("tag").cast(pl.String)).write_parquet(
         out_path / "tag2idx.parquet", compression="zstd"
     )
+    with gzip.open(out_path / "tag2idx.json.gz", "wt") as fd:
+        json.dump(
+            {
+                t: i
+                for t, i in tag2index.sort(col("tag").cast(pl.String))[
+                    ["tag", "index"]
+                ].iter_rows()
+            },
+            fd,
+        )
 
+    with gzip.open(out_path / "implications.json.gz", "wt") as fd:
+        json.dump(
+            {
+                t: i
+                for t, i in impl_mapped.group_by("antecedent")
+                .agg("consequent")
+                .iter_rows()
+            },
+            fd,
+        )
+
+    with gzip.open(out_path / "implications_rej.json.gz", "wt") as fd:
+        json.dump(
+            {
+                t: i
+                for t, i in rejtag_impls_csq_mapped.group_by("antecedent_name")
+                .agg("consequent")
+                .iter_rows()
+            },
+            fd,
+        )
+
+    logging.info("Post-processing posts")
     all_posts = post_process_posts(
         post_parquet_paths, tag2index, rejtag_impls_csq_mapped, impl_mapped
     )
 
-    logging.info("Writing posts.parquet...")
+    logging.info("Writing posts.parquet")
     all_posts.write_parquet(out_path / "posts.parquet", compression="zstd")
 
     return tags, all_posts
