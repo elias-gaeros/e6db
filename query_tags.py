@@ -28,10 +28,13 @@ def dothething(args):
     tag_categories = tag_categories[:N_vocab]
 
     X /= np.linalg.norm(X, axis=1)[:, None]
-    pca = PCA(args.first_pca)
-    Xt = pca.fit_transform(X)
-    del X
-    Xt /= np.linalg.norm(Xt, axis=1)[:, None]
+    if args.first_pca and args.first_pca < X.shape[1]:
+        pca = PCA(args.first_pca)
+        Xt = pca.fit_transform(X)
+        Xt /= np.linalg.norm(Xt, axis=1)[:, None]
+        del X
+    else:
+        Xt = X
 
     sel_idxs = np.array(sorted(tags2id[t] for t in args.tags if t in tags2id))
     sel_tags = idx2tag[sel_idxs]
@@ -72,7 +75,7 @@ def dothething(args):
     idxs = np.concatenate([sel_idxs, neigh_idxs])
     query_slice = slice(None, len(sel_idxs))
     target_slice = slice(len(sel_idxs), len(sel_idxs) + args.display_topk)
-    colors = tag_categories_alt_colors if args.dark else tag_categories_colors
+    colors = tag_categories_alt_colors if args.no_dark else tag_categories_colors
     colors = np.array(colors)[tag_categories[idxs]]
 
     # Local PCA
@@ -82,7 +85,9 @@ def dothething(args):
     X2 /= np.linalg.norm(X2, axis=1)[:, None]
     X2t = PCA(2).fit_transform(X2)[:, ::-1]
 
-    f, ax = plt.subplots(figsize=(10, 10), facecolor="black" if args.dark else "white")
+    f, ax = plt.subplots(
+        figsize=(15, 15), facecolor="white" if args.no_dark else "black"
+    )
     ax.axis("off")
 
     dx = 0.01
@@ -111,12 +116,16 @@ def dothething(args):
         )
 
     f.tight_layout()
-    f.savefig(args.plot_out, facecolor="auto")
+    if str(args.plot_out) == "-":
+        plt.show(block=True)
+    else:
+        f.savefig(args.plot_out, facecolor="auto")
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Query similar tags and plots a local-PCA"
+        description="Query similar tags and plots a local PCA",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
         "tags",
@@ -150,7 +159,7 @@ def parse_args():
         "-d",
         "--first-pca",
         type=int,
-        default=128,
+        default=None,
         help="truncation rank for the global PCA applied to all vectors for smoothing them",
     )
     parser.add_argument(
@@ -165,10 +174,10 @@ def parse_args():
         "--plot-out",
         type=Path,
         default=None,
-        help="Where to write the local-PCA plot",
+        help="Where to write the PCA plot",
     )
     parser.add_argument(
-        "--dark",
+        "--no-dark",
         action="store_true",
         help="Invert colors of the plot",
     )
