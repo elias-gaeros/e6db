@@ -34,6 +34,8 @@ def convert_db_export_to_parquet(
     )
     with gzip.open(out_path / "tags.txt.gz", "wt") as fd:
         fd.writelines(f"{t}\n" for t in tags["tag"])
+    with gzip.open('../data/tags_categories.bin.gz', 'wb') as fd:
+        fd.write(tags['category'].to_numpy().data)
 
     tag2index.with_columns(col("tag").cast(pl.String)).write_parquet(
         out_path / "tag2idx.parquet", compression="zstd"
