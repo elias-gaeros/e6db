@@ -8,12 +8,7 @@ import safetensors
 
 from sklearn.decomposition import PCA
 from e6db.utils.numpy import load_tags
-from e6db.utils import (
-    tag_categories,
-    tag_category2id,
-    tag_categories_colors,
-    tag_categories_alt_colors,
-)
+from e6db.utils import tag_categories, tag_category2id, tag_categories_colors
 
 
 def dothething(args):
@@ -75,8 +70,7 @@ def dothething(args):
     idxs = np.concatenate([sel_idxs, neigh_idxs])
     query_slice = slice(None, len(sel_idxs))
     target_slice = slice(len(sel_idxs), len(sel_idxs) + args.display_topk)
-    colors = tag_categories_alt_colors if args.no_dark else tag_categories_colors
-    colors = np.array(colors)[tag_categories[idxs]]
+    colors = np.array(tag_categories_colors)[tag_categories[idxs]]
 
     # Local PCA
     X2 = Xt[idxs]
@@ -85,9 +79,7 @@ def dothething(args):
     X2 /= np.linalg.norm(X2, axis=1)[:, None]
     X2t = PCA(2).fit_transform(X2)[:, ::-1]
 
-    f, ax = plt.subplots(
-        figsize=(15, 15), facecolor="white" if args.no_dark else "black"
-    )
+    f, ax = plt.subplots(figsize=(15, 15), facecolor="#152f56")
     ax.axis("off")
 
     dx = 0.01
@@ -160,7 +152,7 @@ def parse_args():
         "--first-pca",
         type=int,
         default=None,
-        help="truncation rank for the global PCA applied to all vectors for smoothing them",
+        help="truncation rank for the global PCA meant to smooth all embeddings",
     )
     parser.add_argument(
         "-k",
@@ -174,12 +166,7 @@ def parse_args():
         "--plot-out",
         type=Path,
         default=None,
-        help="Where to write the PCA plot",
-    )
-    parser.add_argument(
-        "--no-dark",
-        action="store_true",
-        help="Invert colors of the plot",
+        help="Where to write the PCA plot (use '-' to display an interactive plot)",
     )
     parser.add_argument(
         "--data_dir",
