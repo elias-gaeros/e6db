@@ -31,7 +31,8 @@ def dothething(args):
     else:
         Xt = X
 
-    sel_idxs = np.array(sorted(tags2id[t] for t in args.tags if t in tags2id))
+    sel_idxs = (tags2id.get(t, N_vocab) for t in args.tags)
+    sel_idxs = np.array(sorted(i for i in sel_idxs if i < N_vocab))
     sel_tags = idx2tag[sel_idxs]
     print("Query tags:", " ".join(sel_tags))
 
@@ -54,7 +55,7 @@ def dothething(args):
         o = np.argsort(scores[neigh_idxs[:, i], i])[::-1]
         o = neigh_idxs[o[: args.display_topk], i]
         tag_list = " ".join(idx2tag[o])
-        print(f"{t}: {tag_list}")
+        print(f"* {t}: {tag_list}")
 
     # Deduplicate, global top-k
     neigh_idxs = np.unique(neigh_idxs)
