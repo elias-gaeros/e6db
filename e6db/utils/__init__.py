@@ -6,6 +6,7 @@ import json
 tag_categories = [
     "general",
     "artist",
+    "",  # Invalid catid
     "copyright",
     "character",
     "species",
@@ -14,10 +15,11 @@ tag_categories = [
     "lore",
     "pool",
 ]
-tag_category2id = {v: k for k, v in enumerate(tag_categories)}
+tag_category2id = {v: k for k, v in enumerate(tag_categories) if v}
 tag_categories_colors = [
     "#b4c7d9",
     "#f2ac08",
+    "black",  # Invalid catid
     "#d0d",
     "#0a0",
     "#ed5d1f",
@@ -29,6 +31,7 @@ tag_categories_colors = [
 tag_categories_alt_colors = [
     "#2e76b4",
     "#fbd67f",
+    "black",  # Invalid catid
     "#ff5eff",
     "#2bff2b",
     "#f6b295",

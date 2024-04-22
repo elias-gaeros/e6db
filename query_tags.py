@@ -8,7 +8,7 @@ import safetensors
 
 from sklearn.decomposition import PCA
 from e6db.utils.numpy import load_tags
-from e6db.utils import tag_categories, tag_category2id, tag_categories_colors
+from e6db.utils import tag_category2id, tag_categories_colors
 
 
 def dothething(args):
@@ -45,8 +45,9 @@ def dothething(args):
     # Score and filter
     scores = Xt @ Xt[sel_idxs].T
     scores[sel_idxs, :] = float("-inf")
-    if args.category is not None:
-        scores[tag_categories != tag_category2id[args.category], :] = float("-inf")
+    if args.category:
+        categories = [tag_category2id[cat] for cat in args.category]
+        scores[~np.isin(tag_categories, categories), :] = float("-inf")
 
     # Per query top-k
     neigh_idxs = np.argpartition(-scores, top_k, axis=0)[:top_k]
@@ -130,8 +131,8 @@ def parse_args():
     parser.add_argument(
         "-c",
         "--category",
-        choices=tag_categories,
-        default=None,
+        choices=tag_category2id.keys(),
+        action="append",
         help="restrict the output to the specified tag category",
     )
     parser.add_argument(
