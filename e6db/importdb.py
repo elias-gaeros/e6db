@@ -170,8 +170,9 @@ def normalize_tag_list(tag_freqs, tags, aliases, impls, min_freq=2, blacklist=No
     # Join categories
     used_tags = (
         used_tags.join(
-            tags.lazy(), how="inner", left_on="tag", right_on="name", validate="1:1"
+            tags.lazy(), how="left", left_on="tag", right_on="name", validate="1:1"
         )
+        .with_columns(col("category").fill_null(0))
         .sort("freq", descending=True)
         .filter(col("freq") >= min_freq)
         .collect()
