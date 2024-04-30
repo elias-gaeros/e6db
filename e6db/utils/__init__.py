@@ -3,6 +3,7 @@ from pathlib import Path
 import gzip
 import json
 import warnings
+import math
 from typing import Callable, Iterable
 
 tag_categories = [
@@ -69,7 +70,7 @@ def load_implications(data_dir):
     Load implication mappings. Returns a tuple `(implications, implications_rej)`
 
     * `implications`: dict mapping numerical ids to a list of implied numerical
-      ids
+      ids. Contains transitive implications.
     * `implications_rej`: dict mapping tag to a list of implied numerical ids
     keys in implications_rej are tag that have a very little usage (less than 2
     posts) and don't have numerical ids associated with them.
@@ -82,19 +83,35 @@ def load_implications(data_dir):
     return implications, implications_rej
 
 
+def tag_rank_to_freq(rank: int) -> float:
+    """Approximate the frequency of a tag given its rank"""
+    return math.exp(26.4284 * math.tanh(2.93505 * rank ** (-0.136501)) - 11.492)
+
+
+def tag_freq_to_rank(freq: int) -> float:
+    """Approximate the rank of a tag given its frequency"""
+    log_freq = math.log(freq)
+    return math.exp(
+        -7.57186
+        * (0.0465456 * log_freq - 1.24326)
+        * math.log(1.13045 - 0.0720383 * log_freq)
+        + 12.1903
+    )
+
+
 MapFun = Callable[[str, int | None], str | list[str]]
 
 
-#
-# WARNING: this API is goofy and will chang soon
-#
 class TagNormalizer:
     """
     Map tag strings to numerical ids, and vice versa.
 
-    Multiple strings can be mapped to a single id, while each id map to a single
-    string. As a result, the encode/decode process can be used to normalize
-    tags.
+    Multiple strings can be mapped to a single id, while each id maps to a
+    single string. As a result, the encode/decode process can be used to
+    normalize tags to canonical spelling.
+
+    See `add_input_mappings` for adding aliases, and `rename_output` for setting
+    the canonical spelling of a tag.
     """
 
     def __init__(self, path_or_data: str | Path | tuple[dict, list, bytes]):
@@ -103,6 +120,14 @@ class TagNormalizer:
         else:
             data = path_or_data
         self.tag2idx, self.idx2tag, self.tag_categories = data
+
+    def get_category(self, tag: int | str, as_string=True) -> int:
+        if isinstance(tag, str):
+            tag = self.encode(tag)
+        cat = self.tag_categories[tag]
+        if as_string:
+            return tag_categories[cat]
+        return cat
 
     def encode(self, tag: str, default=None):
         "Convert tag string to numerical id"

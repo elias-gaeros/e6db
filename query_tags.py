@@ -4,11 +4,15 @@ import argparse
 
 import numpy as np
 import safetensors
-
-
 from sklearn.decomposition import PCA
+
 from e6db.utils.numpy import load_tags
-from e6db.utils import tag_category2id, tag_categories_colors
+from e6db.utils import (
+    tag_category2id,
+    tag_categories_colors,
+    tag_freq_to_rank,
+    tag_rank_to_freq,
+)
 
 
 def dothething(args):
@@ -37,14 +41,16 @@ def dothething(args):
     print("Query tags:", " ".join(sel_tags))
 
     # Select neighboring tags similar to the input tags
-    n_neighbors = args.global_topk
+    global_topk = args.global_topk
     top_k = args.topk
     if top_k is None:
-        top_k = int(1.5 * args.global_topk // len(sel_idxs))
+        top_k = int(1.5 * global_topk / len(sel_idxs))
+    rank_tresh = int(tag_freq_to_rank(args.min_frequency))
+    print(f"{rank_tresh=}")
 
     # Score and filter
-    scores = Xt @ Xt[sel_idxs].T
-    scores[sel_idxs, :] = float("-inf")
+    scores = Xt[:rank_tresh] @ Xt[sel_idxs].T
+    scores[sel_idxs, :] = float("-inf")  # Mask self-matches
     if args.category:
         categories = [tag_category2id[cat] for cat in args.category]
         scores[~np.isin(tag_categories, categories), :] = float("-inf")
@@ -53,21 +59,22 @@ def dothething(args):
     neigh_idxs = np.argpartition(-scores, top_k, axis=0)[:top_k]
 
     for i, t in enumerate(sel_tags):
-        o = np.argsort(scores[neigh_idxs[:, i], i])[::-1]
-        o = neigh_idxs[o[: args.display_topk], i]
-        tag_list = " ".join(idx2tag[o])
-        print(f"* {t}: {tag_list}")
+        order = np.argsort(scores[neigh_idxs[:, i], i])[::-1]
+        idxs = neigh_idxs[order[: args.display_topk], i]
+        tag_list = " ".join(
+            f"{idx2tag[i]} ({format_tagfreq(tag_rank_to_freq(i))})" for i in idxs
+        )
+        print(f"* {t} ({format_tagfreq(tag_rank_to_freq(sel_idxs[i]))}): {tag_list}")
+
+    if not args.plot_out:
+        return
+    from matplotlib import pyplot as plt
 
     # Deduplicate, global top-k
     neigh_idxs = np.unique(neigh_idxs)
     scores = scores[neigh_idxs, :].sum(axis=1)
-    if len(neigh_idxs) > n_neighbors:
-        neigh_idxs = neigh_idxs[np.argpartition(-scores, n_neighbors)[:n_neighbors]]
-
-    if not args.plot_out:
-        return
-
-    from matplotlib import pyplot as plt
+    if len(neigh_idxs) > global_topk:
+        neigh_idxs = neigh_idxs[np.argpartition(-scores, global_topk)[:global_topk]]
 
     idxs = np.concatenate([sel_idxs, neigh_idxs])
     query_slice = slice(None, len(sel_idxs))
@@ -81,7 +88,7 @@ def dothething(args):
     X2 /= np.linalg.norm(X2, axis=1)[:, None]
     X2t = PCA(2).fit_transform(X2)[:, ::-1]
 
-    f, ax = plt.subplots(figsize=(15, 15), facecolor="#152f56")
+    f, ax = plt.subplots(figsize=(12, 12), facecolor="#152f56")
     ax.axis("off")
 
     dx = 0.01
@@ -118,7 +125,7 @@ def dothething(args):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Query similar tags and plots a local PCA",
+        description="Query similar tags and plots a local PCA.\nUse `-o -` to get an interactive plot",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
@@ -136,6 +143,13 @@ def parse_args():
         help="restrict the output to the specified tag category",
     )
     parser.add_argument(
+        "-f",
+        "--min_frequency",
+        type=int,
+        default=100,
+        help="minimal number of posts tagged for a tag to be considered",
+    )
+    parser.add_argument(
         "-N",
         "--display-topk",
         type=int,
@@ -150,18 +164,18 @@ def parse_args():
         help="selects the global top-k neighbors for the local PCA",
     )
     parser.add_argument(
+        "-k",
+        "--topk",
+        type=int,
+        default=None,
+        help="Number of neighbors to consider for each query tag. When not specified, is set to 1.5 * GLOBAL_TOPK / <number of query tags>",
+    )
+    parser.add_argument(
         "-d",
         "--first-pca",
         type=int,
         default=None,
         help="truncation rank for the global PCA meant to smooth all embeddings",
-    )
-    parser.add_argument(
-        "-k",
-        "--topk",
-        type=int,
-        default=None,
-        help="Number of neighbors to consider for each query tag",
     )
     parser.add_argument(
         "-o",
@@ -178,6 +192,15 @@ def parse_args():
     )
 
     return parser.parse_args()
+
+
+def format_tagfreq(count):
+    count = int(count)
+    if count < 1000:
+        return str(count)
+    elif count < 1000_000:
+        return f"{count*1e-3:.1f}k"
+    return f"{count*1e-6:.1f}m"
 
 
 if __name__ == "__main__":
