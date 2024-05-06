@@ -45,15 +45,14 @@ def dothething(args):
     top_k = args.topk
     if top_k is None:
         top_k = int(1.5 * global_topk / len(sel_idxs))
-    rank_tresh = int(tag_freq_to_rank(args.min_frequency))
-    print(f"{rank_tresh=}")
+    rank_tresh = min(N_vocab, int(tag_freq_to_rank(args.min_frequency)))
 
     # Score and filter
     scores = Xt[:rank_tresh] @ Xt[sel_idxs].T
-    scores[sel_idxs, :] = float("-inf")  # Mask self-matches
+    scores[sel_idxs[sel_idxs < rank_tresh], :] = float("-inf")  # Mask self-matches
     if args.category:
         categories = [tag_category2id[cat] for cat in args.category]
-        scores[~np.isin(tag_categories, categories), :] = float("-inf")
+        scores[~np.isin(tag_categories[:rank_tresh], categories), :] = float("-inf")
 
     # Per query top-k
     neigh_idxs = np.argpartition(-scores, top_k, axis=0)[:top_k]
