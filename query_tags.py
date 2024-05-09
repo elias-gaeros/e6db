@@ -3,8 +3,7 @@ from pathlib import Path
 import argparse
 
 import numpy as np
-import safetensors
-from sklearn.decomposition import PCA
+import safetensors.numpy
 
 from e6db.utils.numpy import load_tags
 from e6db.utils import (
@@ -16,10 +15,7 @@ from e6db.utils import (
 
 
 def dothething(args):
-    with safetensors.safe_open(
-        args.data_dir / "implicit_tag_factors.safetensors", framework="numpy"
-    ) as st:
-        X = st.get_tensor("tag_factors")
+    X = load_smoothed(args.data_dir, args.first_pca)
     N_vocab = X.shape[0]
 
     tags2id, idx2tag, tag_categories = load_tags(args.data_dir)
@@ -41,7 +37,7 @@ def dothething(args):
     rank_tresh = min(N_vocab, int(tag_freq_to_rank(args.min_frequency)))
 
     # Score and filter
-    scores = Xt[:rank_tresh] @ Xt[sel_idxs].T
+    scores = X[:rank_tresh] @ X[sel_idxs].T
     scores[sel_idxs[sel_idxs < rank_tresh], :] = float("-inf")  # Mask self-matches
     if args.category:
         categories = [tag_category2id[cat] for cat in args.category]
@@ -61,6 +57,7 @@ def dothething(args):
     if not args.plot_out:
         return
     from matplotlib import pyplot as plt
+    from sklearn.decomposition import PCA
 
     # Deduplicate, global top-k
     neigh_idxs = np.unique(neigh_idxs)
@@ -74,8 +71,8 @@ def dothething(args):
     colors = np.array(tag_categories_colors)[tag_categories[idxs]]
 
     # Local PCA
-    X2 = Xt[idxs]
-    del Xt
+    X2 = X[idxs]
+    del X
     X2 = X2 - X2.mean(0)
     X2 /= np.linalg.norm(X2, axis=1)[:, None]
     X2t = PCA(2).fit_transform(X2)[:, ::-1]
@@ -113,6 +110,37 @@ def dothething(args):
         plt.show(block=True)
     else:
         f.savefig(args.plot_out, facecolor="auto")
+
+
+def load_smoothed(data_dir: Path | str, k: None | int = None):
+    """
+    Loads the tag embeddings, scale them to unit length and optionally smooth
+    them by reducing dimensionality using PCA.
+    """
+    # Try loading from cache
+    data_dir = Path(data_dir)
+    pca_cache_path = data_dir / f"implicit_tag_factors_pca{k}.safetensors"
+    if k and pca_cache_path.exists():
+        with safetensors.safe_open(pca_cache_path, framework="numpy") as st:
+            return st.get_tensor(f"tag_factors_pca{k}")
+
+    # Load raw embeddings
+    with safetensors.safe_open(
+        data_dir / "implicit_tag_factors.safetensors", framework="numpy"
+    ) as st:
+        X = st.get_tensor("tag_factors")
+    X /= np.linalg.norm(X, axis=1)[:, None]
+
+    if not k or k >= X.shape[1]:
+        return X
+
+    from sklearn.decomposition import PCA
+
+    pca = PCA(k)
+    X = pca.fit_transform(X)
+    X /= np.linalg.norm(X, axis=1)[:, None]
+    safetensors.numpy.save_file({f"tag_factors_pca{k}": X}, pca_cache_path)
+    return X
 
 
 def parse_args():
