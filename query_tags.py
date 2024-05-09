@@ -26,17 +26,10 @@ def dothething(args):
     idx2tag = idx2tag[:N_vocab]
     tag_categories = tag_categories[:N_vocab]
 
-    X /= np.linalg.norm(X, axis=1)[:, None]
-    if args.first_pca and args.first_pca < X.shape[1]:
-        pca = PCA(args.first_pca)
-        Xt = pca.fit_transform(X)
-        Xt /= np.linalg.norm(Xt, axis=1)[:, None]
-        del X
-    else:
-        Xt = X
-
     sel_idxs = (tags2id.get(t, N_vocab) for t in args.tags)
     sel_idxs = np.array(sorted(i for i in sel_idxs if i < N_vocab))
+    if len(sel_idxs) == 0:
+        raise SystemExit("None of the tags can be found. Please check spelling.")
     sel_tags = idx2tag[sel_idxs]
     print("Query tags:", " ".join(sel_tags))
 
