@@ -54,7 +54,7 @@ def load_tags(data_dir):
     * `tag_categories`: byte string mapping numerical id to categories
     """
     data_dir = Path(data_dir)
-    with gzip.open(data_dir / "tags.txt.gz", "rt") as fd:
+    with gzip.open(data_dir / "tags.txt.gz", "rt", encoding="utf-8") as fd:
         idx2tag = fd.read().split("\n")
         if not idx2tag[-1]:
             idx2tag = idx2tag[:-1]
@@ -71,9 +71,10 @@ def load_implications(data_dir):
 
     * `implications`: dict mapping numerical ids to a list of implied numerical
       ids. Contains transitive implications.
-    * `implications_rej`: dict mapping tag to a list of implied numerical ids
-    keys in implications_rej are tag that have a very little usage (less than 2
-    posts) and don't have numerical ids associated with them.
+    * `implications_rej`: dict mapping tag strings to a list of implied
+      numerical ids. keys in implications_rej are tags that have a very little
+      usage (less than 2 posts) and don't have numerical ids associated with
+      them.
     """
     with gzip.open(data_dir / "implications.json.gz", "rb") as fp:
         implications = json.load(fp)
