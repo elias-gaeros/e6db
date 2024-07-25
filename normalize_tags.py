@@ -224,9 +224,9 @@ def print_topk(counter, tagset_normalizer, n=10, categories=None, implied=False)
         implied = ""
     if categories:
         category_names = ", ".join(categories)
-        print(f"\n🔝 Top {n} most common {implied}tags in categories: {category_names}")
+        print(f"\nTop {n} most common {implied}tags in categories: {category_names}")
     else:
-        print(f"\n🔝 Top {n} most common {implied}tags:")
+        print(f"\nTop {n} most common {implied}tags:")
 
     filtered_counter = counter
     if categories:
