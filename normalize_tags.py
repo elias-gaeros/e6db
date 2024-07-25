@@ -281,13 +281,13 @@ def main():
     parser.add_argument(
         "-b",
         "--additional-blacklist",
-        nargs="+",
+        action="append",
         help="Additional tags to add to the blacklist",
     )
     parser.add_argument(
         "-r",
         "--additional-blacklist-regexp",
-        nargs="+",
+        action="append",
         help="Additional regular expressions for blacklisting tags",
     )
     parser.add_argument(
@@ -320,7 +320,7 @@ def main():
     parser.add_argument(
         "-c",
         "--stats-categories",
-        nargs="+",
+        action="append",
         choices=list(tag_category2id.keys()) + ["unknown"],
         help="Restrict tag count printing to specific categories or 'unknown'",
     )
@@ -337,58 +337,53 @@ def main():
     logger.info(f"Input directory: {args.input_dir}")
     logger.info(f"Output directory: {args.output_dir}")
 
-    try:
-        logger.info("🔧 Initializing tag normalizer...")
-        start_time = time.time()
-        tagset_normalizer = make_tagset_normalizer(warn_conflict=args.print_conflicts)
-        logging.info(f"  Data loaded in {time.time() - start_time:.2f} seconds")
+    logger.info("🔧 Initializing tag normalizer...")
+    start_time = time.time()
+    tagset_normalizer = make_tagset_normalizer(warn_conflict=args.print_conflicts)
+    logging.info(f"  Data loaded in {time.time() - start_time:.2f} seconds")
 
-        logger.info("🚫 Creating blacklist...")
-        blacklist = make_blacklist(
+    logger.info("🚫 Creating blacklist...")
+    blacklist = make_blacklist(
+        tagset_normalizer,
+        additional_tags=args.additional_blacklist,
+        additional_regexps=args.additional_blacklist_regexp,
+        override_base=args.override_base_blacklist,
+    )
+    logger.info(f"Blacklist size: {len(blacklist)} tags")
+    if args.print_blacklist:
+        print_blacklist(blacklist, tagset_normalizer)
+
+    logger.info("🔍 Processing files...")
+    start_time = time.time()
+    counter, implied_counter, processed_files, skipped_files = process_directory(
+        args.input_dir,
+        args.output_dir,
+        tagset_normalizer,
+        blacklist=blacklist,
+        keep_implied=args.keep_implied,
+    )
+
+    logger.info(
+        f"✅ Processing complete! Time taken: {time.time() - start_time:.2f} seconds"
+    )
+    logger.info(f"Files processed: {processed_files}")
+    logger.info(f"Files skipped (no changes): {skipped_files}")
+    logger.info(f"Total unique tags: {len(counter)}")
+    logger.info(f"Total tag occurrences: {sum(counter.values())}")
+    if args.print_topk:
+        print_topk(
+            counter,
             tagset_normalizer,
-            additional_tags=args.additional_blacklist,
-            additional_regexps=args.additional_blacklist_regexp,
-            override_base=args.override_base_blacklist,
+            args.print_topk,
+            args.stats_categories,
         )
-        logger.info(f"Blacklist size: {len(blacklist)} tags")
-        if args.print_blacklist:
-            print_blacklist(blacklist, tagset_normalizer)
-
-        logger.info("🔍 Processing files...")
-        start_time = time.time()
-        counter, implied_counter, processed_files, skipped_files = process_directory(
-            args.input_dir,
-            args.output_dir,
+    if args.print_implied_topk:
+        print_topk(
+            implied_counter,
             tagset_normalizer,
-            blacklist=blacklist,
-            keep_implied=args.keep_implied,
+            args.print_implied_topk,
+            implied=True,
         )
-
-        logger.info(
-            f"✅ Processing complete! Time taken: {time.time() - start_time:.2f} seconds"
-        )
-        logger.info(f"Files processed: {processed_files}")
-        logger.info(f"Files skipped (no changes): {skipped_files}")
-        logger.info(f"Total unique tags: {len(counter)}")
-        logger.info(f"Total tag occurrences: {sum(counter.values())}")
-        if args.print_topk:
-            print_topk(
-                counter,
-                tagset_normalizer,
-                args.print_topk,
-                args.stats_categories,
-            )
-        if args.print_implied_topk:
-            print_topk(
-                implied_counter,
-                tagset_normalizer,
-                args.print_implied_topk,
-                implied=True,
-            )
-
-    except Exception as e:
-        logger.error(f"❌ An error occurred: {str(e)}")
-        sys.exit(1)
 
     logger.info("👋 Tag Normalizer finished. Have a great day!")
 
