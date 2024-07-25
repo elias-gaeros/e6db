@@ -16,16 +16,16 @@ from e6db.utils import TagSetNormalizer, tag_categories, tag_category2id
 data_dir = Path(__file__).resolve().parent / "data"
 
 
-def make_tagset_normalizer(warn_conflict=True):
+def make_tagset_normalizer(warn_conflict=True) -> TagSetNormalizer:
     """
     Create a TagSetNormalizer for encoding/decoding tags to and from integers.
     Pre-configures it with more aliases and customize the spelling of some tags in the output.
     """
-    cat_artist = e6db.utils.tag_category2id["artist"]
-    cat_lore = e6db.utils.tag_category2id["lore"]
-
-    tagset_normalizer = e6db.utils.TagSetNormalizer(data_dir)
+    tagset_normalizer = TagSetNormalizer(data_dir)
     tagid2cat = tagset_normalizer.tag_normalizer.tag_categories
+
+    cat_artist = tag_category2id["artist"]
+    cat_lore = tag_category2id["lore"]
 
     @cache
     def tag_mapfun(tag_underscores, tid):
@@ -98,24 +98,48 @@ def make_tagset_normalizer(warn_conflict=True):
     return tagset_normalizer
 
 
-def make_blacklist(tagset_normalizer):
-    # Manual blacklist: a list of e621 tags or unknown tag strings
-    blacklist = r"""
-    invalid tag, by conditional dnp, 
-    hi res, absurd res, superabsurd res, 4k,
-    uncensored, ambiguous gender,
-    translation edit, story in description,
-    non- balls, non- nipples, non- breasts, feet out of frame
-    """
-    blacklist = (t.strip() for t in blacklist.split(","))
-    blacklist = set(t for t in blacklist if len(t) > 0)
-    # multiline is ok, but don't forget the comma on line endings
-    assert not any("\n" in t for t in blacklist)
+def make_blacklist(
+    tagset_normalizer: TagSetNormalizer,
+    additional_tags=None,
+    additional_regexps=None,
+    override_base=False,
+):
+    if override_base:
+        blacklist = set()
+        re_blacklist = set()
+    else:
+        # Base blacklist
+        blacklist = {
+            "invalid tag",
+            "by conditional dnp",
+            "hi res",
+            "absurd res",
+            "superabsurd res",
+            "4k",
+            "uncensored",
+            "ambiguous gender",
+            "translation edit",
+            "story in description",
+            "non- balls",
+            "non- nipples",
+            "non- breasts",
+            "feet out of frame",
+        }
+        # Base regexp
+        re_blacklist = {r"(\d+|\d+:\d+)"}
 
-    # blacklist years, digits only tags, and aspect ratios
+    # Add additional tags and regexps
+    if additional_tags:
+        blacklist.update(additional_tags)
+    if additional_regexps:
+        re_blacklist.update(additional_regexps)
+
     all_tags = tagset_normalizer.tag_normalizer.idx2tag
-    RE_BLACKLIST = re.compile(r"(\d+|\d+:\d+)")
-    blacklist.update(t for t in all_tags if RE_BLACKLIST.fullmatch(t))
+
+    # Apply regexp blacklist
+    for pattern in re_blacklist:
+        re_pattern = re.compile(pattern)
+        blacklist.update(t for t in all_tags if re_pattern.fullmatch(t))
 
     # blacklist tags ending with ' at source'
     blacklist.update(t for t in all_tags if t.endswith(" at source"))
@@ -129,7 +153,14 @@ def make_blacklist(tagset_normalizer):
     return blacklist
 
 
-def load_caption(fp):
+RE_SEP = re.compile(r"[,\n]")  # Split on commas and newlines
+
+
+def load_caption(fp: Path):
+    """
+    Load caption from file.
+    Caption are formatted like this: tag1, tag2, caption1., caption2.
+    """
     tags, captions = [], []
     with open(fp, "rt") as fd:
         for chunk in RE_SEP.split(fd.read()):
@@ -143,11 +174,15 @@ def load_caption(fp):
     return tags, captions
 
 
-RE_SEP = re.compile(r"[,\n]")  # Split on commas and newlines
-
-
-def process_directory(dataset_root, output_dir, tagset_normalizer, blacklist):
+def process_directory(
+    dataset_root: Path,
+    output_dir: Path,
+    tagset_normalizer: TagSetNormalizer,
+    blacklist: set = set(),
+    keep_implied=True,
+):
     counter = Counter()
+    implied_counter = Counter()
     processed_files = 0
     skipped_files = 0
     for file in chain(dataset_root.glob("**/*.txt"), dataset_root.glob("**/*.cap*")):
@@ -158,11 +193,12 @@ def process_directory(dataset_root, output_dir, tagset_normalizer, blacklist):
         orig_tags = tags
 
         # Convert tags to ids, separate implied tags
-        tags, implied = tagset_normalizer.encode(tags)
+        tags, implied = tagset_normalizer.encode(tags, keep_implied=keep_implied)
         tags = [t for t in tags if t not in blacklist]
 
         # Count tags
         counter.update(tags)
+        implied_counter.update(implied)
 
         # Convert back to strings
         tags = tagset_normalizer.decode(tags)
@@ -178,45 +214,40 @@ def process_directory(dataset_root, output_dir, tagset_normalizer, blacklist):
             fd.write(result)
         processed_files += 1
 
-    return counter, processed_files, skipped_files
+    return counter, implied_counter, processed_files, skipped_files
 
 
-def print_stats(counter, tagset_normalizer, n=10, print_common=False, categories=None):
-    total_tags = sum(counter.values())
-    unique_tags = len(counter)
-    print(f"\n📊 Tag Statistics:")
-    print(f"   Total tags processed: {total_tags}")
-    print(f"   Unique tags: {unique_tags}")
+def print_topk(counter, tagset_normalizer, n=10, categories=None, implied=False):
+    if implied:
+        implied = "implied "
+    else:
+        implied = ""
+    if categories:
+        category_names = ", ".join(categories)
+        print(f"\n🔝 Top {n} most common {implied}tags in categories: {category_names}")
+    else:
+        print(f"\n🔝 Top {n} most common {implied}tags:")
 
-    if print_common:
-        if categories:
-            category_names = ", ".join(categories)
-            print(f"\n🔝 Top {n} most common tags in categories: {category_names}")
-        else:
-            print(f"\n🔝 Top {n} most common tags:")
-
-        filtered_counter = counter
-        if categories:
-            filtered_counter = Counter()
-            for tag, count in counter.items():
-                if isinstance(tag, int):
-                    cat = tag_categories[
-                        tagset_normalizer.tag_normalizer.tag_categories[tag]
-                    ]
-                    if cat in categories:
-                        filtered_counter[tag] = count
-                elif "unknown" in categories:
-                    filtered_counter[tag] = count
-
-        for tag, count in filtered_counter.most_common(n):
+    filtered_counter = counter
+    if categories:
+        filtered_counter = Counter()
+        for tag, count in counter.items():
             if isinstance(tag, int):
-                tag_string = tagset_normalizer.tag_normalizer.decode(tag)
                 cat = tag_categories[
                     tagset_normalizer.tag_normalizer.tag_categories[tag]
                 ]
-                print(f"   {tag_string:<30} count={count:<7} (e621:{cat})")
-            else:
-                print(f"   {tag:<30} count={count:<7} (unknown)")
+                if cat in categories:
+                    filtered_counter[tag] = count
+            elif "unknown" in categories:
+                filtered_counter[tag] = count
+
+    for tag, count in filtered_counter.most_common(n):
+        if isinstance(tag, int):
+            tag_string = tagset_normalizer.tag_normalizer.decode(tag)
+            cat = tag_categories[tagset_normalizer.tag_normalizer.tag_categories[tag]]
+            print(f"   {tag_string:<30} count={count:<7} (e621:{cat})")
+        else:
+            print(f"   {tag:<30} count={count:<7} (unknown)")
 
 
 def print_blacklist(blacklist, tagset_normalizer):
@@ -245,14 +276,30 @@ def main():
         "-v", "--verbose", action="store_true", help="Enable verbose logging"
     )
     parser.add_argument(
-        "--print-blacklist",
-        action="store_true",
-        help="Print the list of blacklisted tags",
+        "-i", "--keep-implied", action="store_true", help="Keep implied tags"
     )
     parser.add_argument(
-        "--print-stats",
+        "-b",
+        "--additional-blacklist",
+        nargs="+",
+        help="Additional tags to add to the blacklist",
+    )
+    parser.add_argument(
+        "-r",
+        "--additional-blacklist-regexp",
+        nargs="+",
+        help="Additional regular expressions for blacklisting tags",
+    )
+    parser.add_argument(
+        "-O",
+        "--override-base-blacklist",
         action="store_true",
-        help="Print tag statistics after processing",
+        help="Override the base blacklist and regexp with only the provided additions",
+    )
+    parser.add_argument(
+        "--print-blacklist",
+        action="store_true",
+        help="Print the effective list of blacklisted tags",
     )
     parser.add_argument(
         "-k",
@@ -261,6 +308,14 @@ def main():
         nargs="?",
         const=100,
         help="Print the N most common tags (default: 100 if flag is used without a value)",
+    )
+    parser.add_argument(
+        "-j",
+        "--print-implied-topk",
+        type=int,
+        nargs="?",
+        const=100,
+        help="Print the N most common implied tags (default: 100 if flag is used without a value)",
     )
     parser.add_argument(
         "-c",
@@ -283,40 +338,52 @@ def main():
     logger.info(f"Output directory: {args.output_dir}")
 
     try:
-        start_time = time.time()
-
         logger.info("🔧 Initializing tag normalizer...")
+        start_time = time.time()
         tagset_normalizer = make_tagset_normalizer(warn_conflict=args.print_conflicts)
+        logging.info(f"  Data loaded in {time.time() - start_time:.2f} seconds")
 
         logger.info("🚫 Creating blacklist...")
-        blacklist = make_blacklist(tagset_normalizer)
-
+        blacklist = make_blacklist(
+            tagset_normalizer,
+            additional_tags=args.additional_blacklist,
+            additional_regexps=args.additional_blacklist_regexp,
+            override_base=args.override_base_blacklist,
+        )
         logger.info(f"Blacklist size: {len(blacklist)} tags")
-
         if args.print_blacklist:
             print_blacklist(blacklist, tagset_normalizer)
 
         logger.info("🔍 Processing files...")
-        counter, processed_files, skipped_files = process_directory(
-            args.input_dir, args.output_dir, tagset_normalizer, blacklist
+        start_time = time.time()
+        counter, implied_counter, processed_files, skipped_files = process_directory(
+            args.input_dir,
+            args.output_dir,
+            tagset_normalizer,
+            blacklist=blacklist,
+            keep_implied=args.keep_implied,
         )
 
-        end_time = time.time()
-        duration = end_time - start_time
-
-        logger.info(f"✅ Processing complete! Time taken: {duration:.2f} seconds")
+        logger.info(
+            f"✅ Processing complete! Time taken: {time.time() - start_time:.2f} seconds"
+        )
         logger.info(f"Files processed: {processed_files}")
         logger.info(f"Files skipped (no changes): {skipped_files}")
         logger.info(f"Total unique tags: {len(counter)}")
         logger.info(f"Total tag occurrences: {sum(counter.values())}")
-
-        if args.print_stats or args.print_topk:
-            print_stats(
+        if args.print_topk:
+            print_topk(
                 counter,
                 tagset_normalizer,
                 args.print_topk,
-                bool(args.print_topk),
                 args.stats_categories,
+            )
+        if args.print_implied_topk:
+            print_topk(
+                implied_counter,
+                tagset_normalizer,
+                args.print_implied_topk,
+                implied=True,
             )
 
     except Exception as e:
