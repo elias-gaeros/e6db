@@ -70,6 +70,10 @@ remove_parens_suffix_for_categories = [
 # Default: "ignore" meaning do not modify the alias
 on_alias_conflict = "ignore"
 
+# Remove Aliases: unregister existing aliases. This can be used to keep tags
+# aliased to "invalid tag" or specialize the meaning of an already aliased tag.
+remove_aliases = []
+
 # Aliases: Define tag aliases (alternative names for the same tag)
 # The key is the alias, and the value is the target tag
 [aliases]
