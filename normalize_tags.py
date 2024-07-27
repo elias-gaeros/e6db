@@ -115,18 +115,14 @@ def make_tagset_normalizer(config: dict) -> TagSetNormalizer:
         tag_normalizer.remove_input_mappings(tag)
 
     # Apply rule based output renames
-    remove_suffix_for_cats = config.get(
-        "remove_parens_suffix_for_categories",
-        ["artist", "character", "copyright", "lore", "species"],
-    )
-    remove_suffix_for_cats = {tag_category2id[c] for c in remove_suffix_for_cats}
+    remove_parens = config.get("remove_parens", True)
     artist_by_prefix = config.get("artist_by_prefix", True)
 
     def map_output(tag, tid):
         cat = tagid2cat[tid] if tid is not None else -1
-        if cat in remove_suffix_for_cats:
-            without_suffix = RE_PARENS_SUFFIX.sub("", tag)
-            if tag != without_suffix and tag2id.get(without_suffix) == tid:
+        if remove_parens:
+            without_suffix = tag.removesuffix(f"_({tag_categories[cat]})")
+            if without_suffix != tag and tag2id.get(without_suffix) == tid:
                 tag = without_suffix
         if cat == cat_artist and artist_by_prefix and not tag.startswith("by_"):
             tag_wby = f"by_{tag}"
@@ -403,7 +399,8 @@ def main():
         help="Don't ask for confirmation for clobbering input files",
     )
     parser.add_argument(
-        "-b", "--print-blacklist",
+        "-b",
+        "--print-blacklist",
         action="store_true",
         help="Print the effective list of blacklisted tags",
     )

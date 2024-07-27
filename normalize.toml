@@ -54,16 +54,11 @@ blacklist_categories = ["pool"]
 # By default, underscores are replaced with spaces unless specified here
 keep_underscores = ["rating_explicit", "rating_questionable", "rating_safe"]
 
-# Remove Parentheses Suffix: Categories where parenthetical suffixes should be removed
-# E.g., "character_(series)" becomes just "character" if does not conflicts with
-# an existing tag/alias (for on_alias_conflict="ignore")
-remove_parens_suffix_for_categories = [
-    "artist",
-    "character",
-    "copyright",
-    "lore",
-    "species",
-]
+# Remove prentheses suffixes that matches the tag's category like _(species) or
+# _(character) if it doesn't conflict with another tag (when
+# on_alias_conflict="ignore") 
+# Default: true
+remove_parens = true
 
 # On Alias Conflict: How to handle conflicts when creating aliases
 # Options: "silent", "overwrite", "overwrite_rarest", "warn", "raise"
