@@ -52,7 +52,15 @@ blacklist_categories = ["pool"]
 
 # Keep Underscores: List of tags where underscores should be preserved
 # By default, underscores are replaced with spaces unless specified here
-keep_underscores = ["rating_explicit", "rating_questionable", "rating_safe"]
+keep_underscores = [
+    "rating_explicit",
+    "rating_questionable",
+    "rating_safe",
+    "source_pony",
+    "source_furry",
+    "source_anime",
+    "source_cartoon",
+]
 
 # Remove parentheses suffixes that matches the tag's category like _(species) or
 # _(character) if it doesn't conflict with another tag (when
