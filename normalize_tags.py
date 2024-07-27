@@ -131,7 +131,8 @@ def make_tagset_normalizer(config: dict) -> TagSetNormalizer:
         return tag
 
     tagset_normalizer = tagset_normalizer.map_outputs(map_output)
-    tag2id = tagset_normalizer.tag_normalizer.tag2idx
+    tag_normalizer = tagset_normalizer.tag_normalizer
+    tag2id = tag_normalizer.tag2idx
 
     # Apply custom output renames
     for old, new in output_renames.items():
