@@ -1,5 +1,17 @@
 # Tag Normalization Configuration
 
+# Use Underscores: Determines whether to use underscores or spaces in output tags
+# Default: false (use spaces)
+use_underscores = false
+
+# Keep Implied: Whether to keep implied tags or remove them. Can also be a list of tags
+# Default: false (remove implied tags)
+keep_implied = false
+
+# Artist By Prefix: Whether to add "by_" prefix to artist tags
+# Default: true
+artist_by_prefix = true
+
 # Blacklist: A list of tags to be removed during normalization
 # These tags will be completely excluded from the output
 # Default: ["invalid tag"]
@@ -30,13 +42,17 @@ blacklist_regexp = [
     ".*?_at_source",
 ]
 
-# Keep Underscores: List of tags where underscores should be preserved
-# By default, underscores are replaced with spaces unless specified here
-keep_underscores = ["rating_explicit", "rating_questionable", "rating_safe"]
+# Blacklist Implied: Whether to also blacklist tags implied by blacklisted tags
+# Default: true
+blacklist_implied = true
 
 # Blacklist Categories: Entire categories of tags to be removed
 # Common categories include "artist", "character", "copyright", "general", "meta", "species", "pool"
 blacklist_categories = ["pool"]
+
+# Keep Underscores: List of tags where underscores should be preserved
+# By default, underscores are replaced with spaces unless specified here
+keep_underscores = ["rating_explicit", "rating_questionable", "rating_safe"]
 
 # Remove Parentheses Suffix: Categories where parenthetical suffixes should be removed
 # E.g., "character_(series)" becomes just "character" if does not conflicts with
@@ -49,26 +65,10 @@ remove_parens_suffix_for_categories = [
     "species",
 ]
 
-# Use Underscores: Determines whether to use underscores or spaces in output tags
-# Default: false (use spaces)
-use_underscores = false
-
-# Keep Implied: Whether to keep implied tags or remove them. Can also be a list of tags
-# Default: false (remove implied tags)
-keep_implied = false
-
 # On Alias Conflict: How to handle conflicts when creating aliases
 # Options: "silent", "overwrite", "overwrite_rarest", "warn", "raise"
 # Default: "ignore" meaning do not modify the alias
 on_alias_conflict = "ignore"
-
-# Artist By Prefix: Whether to add "by_" prefix to artist tags
-# Default: true
-artist_by_prefix = true
-
-# Blacklist Implied: Whether to also blacklist tags implied by blacklisted tags
-# Default: true
-blacklist_implied = true
 
 # Aliases: Define tag aliases (alternative names for the same tag)
 # The key is the alias, and the value is the target tag
