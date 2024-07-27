@@ -4,7 +4,11 @@ import gzip
 import json
 import warnings
 import math
+import logging
 from typing import Callable, Iterable
+
+
+logger = logging.getLogger(__name__)
 
 tag_categories = [
     "general",
@@ -62,6 +66,7 @@ def load_tags(data_dir):
         tag2idx = json.load(fp)
     with gzip.open(data_dir / "tags_categories.bin.gz", "rb") as fp:
         tag_categories = fp.read()
+    logging.info(f"Loaded {len(idx2tag)} tags, {len(tag2idx)} tag2id mappings")
     return tag2idx, idx2tag, tag_categories
 
 
@@ -81,6 +86,9 @@ def load_implications(data_dir):
     implications = {int(k): v for k, v in implications.items()}
     with gzip.open(data_dir / "implications_rej.json.gz", "rb") as fp:
         implications_rej = json.load(fp)
+    logger.info(
+        f"Loaded {len(implications)} implications + {len(implications_rej)} implication from tags without id"
+    )
     return implications, implications_rej
 
 
@@ -100,7 +108,8 @@ def tag_freq_to_rank(freq: int) -> float:
     )
 
 
-MapFun = Callable[[str, int | None], str | list[str]]
+InMapFun = Callable[[str, int | None], list[str]]
+OutMapFun = Callable[[str], list[str]]
 
 
 class TagNormalizer:
@@ -173,12 +182,22 @@ class TagNormalizer:
                 if on_conflict == "raise":
                     raise ValueError(msg)
                 elif on_conflict == "warn":
-                    warnings.warn(msg)
+                    logger.warning(msg)
                 elif on_conflict == "overwrite_rarest" and to_tid > conflict:
                     continue
                 elif on_conflict != "overwrite":
                     continue
             tag2idx[tag] = to_tid
+
+    def remove_input_mappings(self, tags: str | Iterable[str]):
+        """Remove tag strings from the mapping"""
+        if isinstance(tags, str):
+            tags = (tags,)
+        for tag in tags:
+            if tag in self.tag2idx:
+                del self.tag2idx[tag]
+            else:
+                logger.warning(f"tag {tag!r} is not a valid tag")
 
     def rename_output(self, orig: int | str, dest: str):
         """Change the tag string associated with an id. Used by `decode`."""
@@ -186,15 +205,14 @@ class TagNormalizer:
             orig = self.tag2idx[orig]
         self.idx2tag[orig] = dest
 
-    def map_inputs(self, mapfun: MapFun, on_conflict="raise") -> "TagNormalizer":
+    def map_inputs(self, mapfun: InMapFun, on_conflict="raise") -> "TagNormalizer":
         res = type(self)(({}, self.idx2tag, self.tag_categories))
         for tag, tid in self.tag2idx.items():
             res.add_input_mappings(mapfun(tag, tid), tid, on_conflict=on_conflict)
         return res
 
-    def map_outputs(self, mapfun: MapFun) -> "TagNormalizer":
-        idx2tag_gen = (mapfun(t, i) for i, t in enumerate(self.idx2tag))
-        idx2tag = [t if isinstance(t, str) else t[0] for t in idx2tag_gen]
+    def map_outputs(self, mapfun: OutMapFun) -> "TagNormalizer":
+        idx2tag = [mapfun(t, i) for i, t in enumerate(self.idx2tag)]
         return type(self)((self.tag2idx, idx2tag, self.tag_categories))
 
     def get(self, key: int | str, default=None):
@@ -218,9 +236,9 @@ class TagSetNormalizer:
             data = path_or_data
         self.tag_normalizer, self.implications, self.implications_rej = data
 
-    def map_implicaitons_rej(
-        self, mapfun: MapFun, on_conflict="raise"
-    ) -> "TagSetNormalizer":
+    def map_inputs(self, mapfun: InMapFun, on_conflict="raise") -> "TagSetNormalizer":
+        tag_normalizer = self.tag_normalizer.map_inputs(mapfun, on_conflict=on_conflict)
+
         implications_rej: dict[str, list[str]] = {}
         for tag_string, implied_ids in self.implications_rej.items():
             for new_tag_string in mapfun(tag_string, None):
@@ -235,36 +253,22 @@ class TagSetNormalizer:
                         continue
                 implications_rej[new_tag_string] = implied_ids
 
-        return type(self)((self.tag_normalizer, self.implications, implications_rej))
-
-    def map_tags(
-        self, mapfun: MapFun, map_input=True, map_output=True, on_conflict="raise"
-    ) -> "TagSetNormalizer":
-        """Apply a function to all tag strings.
-
-        The provided function will be run on:
-
-        * The of list output tag strings,
-        * Keys from the dictionary mapping strings to ids, contains canonical
-          tag and aliases,
-        * Implication source tags that are not used frequently enough to get an
-          id assigned (less than twice).
-
-        The function should return a list, where the first string is the
-        canonical tag used in the output, the others are additional aliases
-        used for recognizing the tag.
-        """
-        tag_normalizer = self.tag_normalizer
-        if map_input:
-            tag_normalizer = tag_normalizer.map_inputs(mapfun, on_conflict=on_conflict)
-        if map_output:
-            tag_normalizer = tag_normalizer.map_outputs(mapfun)
-        res = type(self)((tag_normalizer, self.implications, self.implications_rej))
-        if map_input:
-            res = res.map_implicaitons_rej(mapfun, on_conflict=on_conflict)
+        res = type(self)((tag_normalizer, self.implications, implications_rej))
         return res
 
-    def encode(self, tags: Iterable[str], keep_implied=False):
+    def map_outputs(self, mapfun: OutMapFun) -> "TagSetNormalizer":
+        tag_normalizer = self.tag_normalizer.map_outputs(mapfun)
+        return type(self)((tag_normalizer, self.implications, self.implications_rej))
+
+    def get_implied(self, tag: int | str) -> list[int]:
+        if isinstance(tag, int):
+            return self.implications.get(tag, ())
+        else:
+            return self.implications_rej.get(tag, ())
+
+    def encode(
+        self, tags: Iterable[str], keep_implied: bool | set[int] = False
+    ) -> tuple[list[int | str], set[int]]:
         """
         Encode a list of string as numerical ids and strip implied tags.
 
@@ -277,17 +281,23 @@ class TagSetNormalizer:
         """
         implied = set()
         res = []
+        encode = self.tag_normalizer.tag2idx.get
+        get_implied = self.implications.get
+        get_implied_rej = self.implications_rej.get
         for tag in tags:
-            tag = self.tag_normalizer.encode(tag, tag)
+            tag = encode(tag, tag)
             implied.update(
-                self.implications.get(tag, ())
+                get_implied(tag, ())
                 if isinstance(tag, int)
-                else self.implications_rej.get(tag, ())
+                else get_implied_rej(tag, ())
             )
             res.append(tag)
         if not keep_implied:
             res = [t for t in res if t not in implied]
+        elif isinstance(keep_implied, set):
+            res = [t for t in res if t not in implied or t in keep_implied]
         return res, implied
 
-    def decode(self, tags):
-        return [self.tag_normalizer.decode(t) for t in tags]
+    def decode(self, tags: Iterable[int | str]) -> list[str]:
+        idx2tag = self.tag_normalizer.idx2tag
+        return [idx2tag[t] if isinstance(t, int) else t for t in tags]

@@ -3,152 +3,206 @@
 import argparse
 import logging
 import re
-import sys
 import time
 from collections import Counter
-from functools import cache
 from itertools import chain
 from pathlib import Path
 
-import e6db
+try:
+    from tqdm import tqdm
+except ImportError:
+    tqdm = lambda x: x
+
+try:
+    import tomllib
+except ImportError:
+    try:
+        import tomli as tomllib
+    except ImportError:
+        import toml as tomllib
+
 from e6db.utils import TagSetNormalizer, tag_categories, tag_category2id
 
-data_dir = Path(__file__).resolve().parent / "data"
+DATA_DIR = Path(__file__).resolve().parent / "data"
+RE_PARENS_SUFFIX = re.compile(r"_\([^)]+\)$")
 
 
-def make_tagset_normalizer(warn_conflict=True) -> TagSetNormalizer:
+def make_tagset_normalizer(config: dict) -> TagSetNormalizer:
     """
     Create a TagSetNormalizer for encoding/decoding tags to and from integers.
-    Pre-configures it with more aliases and customize the spelling of some tags in the output.
+    Configures it based on the provided config.
     """
-    tagset_normalizer = TagSetNormalizer(data_dir)
+    # This loads all the aliases and implications
+    tagset_normalizer = TagSetNormalizer(DATA_DIR)
+
     tagid2cat = tagset_normalizer.tag_normalizer.tag_categories
-
     cat_artist = tag_category2id["artist"]
-    cat_lore = tag_category2id["lore"]
+    cat2suffix = {
+        tag_category2id["character"]: "_(character)",
+        tag_category2id["lore"]: "_(lore)",
+        tag_category2id["species"]: "_(species)",
+        tag_category2id["copyright"]: "_(copyright)",
+    }
 
-    @cache
-    def tag_mapfun(tag_underscores, tid):
-        """
-        Maps raw e621 tags to more natural forms. The input will be from:
+    # Create additional aliases for tags using simple rules
+    def input_map(tag, tid):
+        yield tag
 
-        * The list output tag strings,
-        * Keys from the dictionary mapping strings to ids, contains canonical
-          tag and aliases,
-        * Implication source tags that are not used frequently enough to get an
-          id.
+        # Make an alias without parentheses, it might conflict but we'll handle
+        # it depending on `on_alias_conflict` config value.
+        without_suffix = RE_PARENS_SUFFIX.sub("", tag)
+        had_suffix = tag != without_suffix
+        if had_suffix:
+            yield without_suffix
 
-        Returns a list, where the first string is the canonical tag used in the
-        output, the others are additional aliases used for recognizing the tag.
-        """
+        # Add an alias with the suffix (special case for artist)
         cat = tagid2cat[tid] if tid is not None else -1
-        tag = tag_underscores.replace("_", " ")
-        tags = [tag, tag_underscores]
         if cat == cat_artist:
-            if not tag.startswith("by "):
-                # 'by ' is used in the output tags
-                tag_without_suffix = tag.removesuffix(" (artist)")
-                tags.insert(0, f"by {tag_without_suffix}")
-            if not tag.endswith("(artist)"):
-                artist = tag.removeprefix("by ")
-                tags.append(f"{artist} (artist)")
-        elif cat == cat_lore and not tag.endswith(" (lore)"):
-            tags.append(f"{tag} (lore)")
+            artist = without_suffix.removeprefix("by_")
+            if artist != without_suffix:
+                yield artist
+                if not had_suffix:
+                    yield f"{artist}_(artist)"
+            else:
+                yield f"by_{artist}"
+                if not had_suffix:
+                    yield f"by_{artist}_(artist)"
+        elif not had_suffix:
+            suffix = cat2suffix.get(cat)
+            if suffix is not None:
+                yield f"{without_suffix}{suffix}"
 
         # Recognize tags where ':' were replaced by a space (aspect ratio)
         if ":" in tag:
-            tags.append(tag.replace(":", " "))
+            yield tag.replace(":", " ")
 
-        # Recognize tags that have escaped parentheses
-        for t in tags.copy():
-            escaped = t.replace("(", "\\(").replace(")", "\\)")
-            if escaped != t:
-                tags.append(escaped)
-
-        # Example of debugging:
-        # if "digital media" in tag:
-        #     print(tags)
-        return tags
-
-    tagset_normalizer = tagset_normalizer.map_tags(
-        tag_mapfun,
-        # on_conflictc choices: "silent", "overwrite", "overwrite_rarest",
-        # warn", "raise", use "warn" to debug conflicts.
-        on_conflict="warn" if warn_conflict else "overwrite_rarest",
+    on_alias_conflict = config.get("on_alias_conflict", None)
+    tagset_normalizer = tagset_normalizer.map_inputs(
+        input_map,
+        # on_conflict choices: "silent", "overwrite", "overwrite_rarest",
+        # "warn", "raise", use "warn" to debug conflicts.
+        on_conflict=on_alias_conflict or "ignore",
     )
-
-    # Add some underscores back in the output, for example "rating explicit"
-    # will be exported as "rating_explicit"
     tag_normalizer = tagset_normalizer.tag_normalizer
-    tag_normalizer.rename_output("rating explicit", "rating_explicit")
-    tag_normalizer.rename_output("rating questionable", "rating_questionable")
-    tag_normalizer.rename_output("rating safe", "rating_safe")
+    tag2id = tag_normalizer.tag2idx
 
-    # Custom mappings, for example "explicit" will be interpreted as
-    # "rating_explicit"
-    tag_normalizer.add_input_mappings("explicit", "rating_explicit")
-    tag_normalizer.add_input_mappings("score_explicit", "rating_explicit")
-    tag_normalizer.add_input_mappings("safe", "rating_safe", on_conflict="overwrite")
-    tag_normalizer.add_input_mappings("score_safe", "rating_safe")
-    tag_normalizer.add_input_mappings(
-        "questionable", "rating_questionable", on_conflict="overwrite"
+    # Apply custom input mappings
+    for antecedent, consequent in config.get("aliases", {}).items():
+        antecedent = antecedent.replace(" ", "_")
+        consequent = consequent.replace(" ", "_")
+        tag_normalizer.add_input_mappings(
+            antecedent, consequent, on_conflict=on_alias_conflict or "warn"
+        )
+    for antecedent, consequent in config.get("aliases_overrides", {}).items():
+        antecedent = antecedent.replace(" ", "_")
+        consequent = consequent.replace(" ", "_")
+        tag_normalizer.add_input_mappings(
+            antecedent, consequent, on_conflict="overwrite"
+        )
+
+    # Apply custom output renames as opposite aliases to ensure
+    # idempotence:
+    output_renames = {
+        old.replace(" ", "_"): new.replace(" ", "_")
+        for old, new in config.get("renames", {}).items()
+    }
+    for old, new in output_renames.items():
+        tag_normalizer.add_input_mappings(new, old)
+
+    # Remove specified aliases
+    for tag in config.get("remove_aliases", []):
+        tag = tag.replace(" ", "_")
+        tag_normalizer.remove_input_mappings(tag)
+
+    # Apply rule based output renames
+    remove_suffix_for_cats = config.get(
+        "remove_parens_suffix_for_categories",
+        ["artist", "character", "copyright", "lore", "species"],
     )
-    tag_normalizer.add_input_mappings("score_questionable", "rating_questionable")
+    remove_suffix_for_cats = {tag_category2id[c] for c in remove_suffix_for_cats}
+    artist_by_prefix = config.get("artist_by_prefix", True)
+
+    def map_output(tag, tid):
+        cat = tagid2cat[tid] if tid is not None else -1
+        if cat in remove_suffix_for_cats:
+            without_suffix = RE_PARENS_SUFFIX.sub("", tag)
+            if tag != without_suffix and tag2id.get(without_suffix) == tid:
+                tag = without_suffix
+        if cat == cat_artist and artist_by_prefix and not tag.startswith("by_"):
+            tag_wby = f"by_{tag}"
+            if tag2id.get(tag_wby) == tid:
+                tag = tag_wby
+        return tag
+
+    tagset_normalizer = tagset_normalizer.map_outputs(map_output)
+    tag2id = tagset_normalizer.tag_normalizer.tag2idx
+
+    # Apply custom output renames
+    for old, new in output_renames.items():
+        if tag2id[old] == tag2id[new]:
+            tag_normalizer.rename_output(old, new)
+        else:
+            logging.warning(
+                f"Cannot rename {old} -> {new}: old tag id={tag2id[old]} vs. new tag id={tag2id[new]})"
+            )
 
     return tagset_normalizer
 
 
 def make_blacklist(
     tagset_normalizer: TagSetNormalizer,
-    additional_tags=None,
-    additional_regexps=None,
-    override_base=False,
+    config: dict,
+    print_blacklist=False,
 ):
-    if override_base:
-        blacklist = set()
-        re_blacklist = set()
-    else:
-        # Base blacklist
-        blacklist = {
-            "invalid tag",
-            "by conditional dnp",
-            "hi res",
-            "absurd res",
-            "superabsurd res",
-            "4k",
-            "uncensored",
-            "ambiguous gender",
-            "translation edit",
-            "story in description",
-            "non- balls",
-            "non- nipples",
-            "non- breasts",
-            "feet out of frame",
-        }
-        # Base regexp
-        re_blacklist = {r"(\d+|\d+:\d+)"}
-
-    # Add additional tags and regexps
-    if additional_tags:
-        blacklist.update(additional_tags)
-    if additional_regexps:
-        re_blacklist.update(additional_regexps)
+    if print_blacklist:
+        print("\n🚫 Blacklisted tags:")
 
     all_tags = tagset_normalizer.tag_normalizer.idx2tag
+    encode = tagset_normalizer.tag_normalizer.encode
+    decode = tagset_normalizer.tag_normalizer.decode
+    get_implied = tagset_normalizer.get_implied
 
-    # Apply regexp blacklist
-    for pattern in re_blacklist:
-        re_pattern = re.compile(pattern)
-        blacklist.update(t for t in all_tags if re_pattern.fullmatch(t))
+    blacklist = set()
+    for tag in config.get("blacklist", ["invalid tag"]):
+        tag = tag.replace(" ", "_")
+        encoded_tag = encode(tag, tag)
+        blacklist.add(encoded_tag)
+        if print_blacklist:
+            decoded_tag = decode(encoded_tag)
+            if tag != decoded_tag:
+                print(f"   {tag} -> {decoded_tag}")
+            else:
+                print(f"   {tag}")
 
-    # blacklist tags ending with ' at source'
-    blacklist.update(t for t in all_tags if t.endswith(" at source"))
+    for regexp in config.get("blacklist_regexp", []):
+        regexp = regexp.replace(" ", "_")
+        cregexp = re.compile(regexp)
+        for tid, tag in enumerate(all_tags):
+            if cregexp.fullmatch(tag):
+                blacklist.add(tid)
+                if print_blacklist:
+                    print(f'   {tag} (r"{regexp})"')
 
-    # Encode the blacklist to ids
-    blacklist, implied = tagset_normalizer.encode(blacklist)
+    implied = set()
+    if config.get("blacklist_implied", True):
+        for tag in blacklist:
+            tag_implied = get_implied(tag)
+            implied.update(tag_implied)
+            if print_blacklist:
+                for implied_tag in tag_implied:
+                    print(f"   {decode(implied_tag)} (implied by {decode(tag)})")
+    blacklist |= implied
 
-    # Also blacklist tags implied by blacklisted tags
-    blacklist = set(blacklist) | implied
+    tagid2cat = tagset_normalizer.tag_normalizer.tag_categories
+    blacklist_categories = {
+        tag_category2id[c] for c in config.get("blacklist_categories", ["pool"])
+    }
+    if blacklist_categories:
+        for tid, cat in enumerate(tagid2cat):
+            if cat in blacklist_categories:
+                blacklist.add(tid)
+                if print_blacklist:
+                    print(f"   {tagid2cat[tid]} (cat:{tag_categories[cat]})")
 
     return blacklist
 
@@ -158,8 +212,11 @@ RE_SEP = re.compile(r"[,\n]")  # Split on commas and newlines
 
 def load_caption(fp: Path):
     """
-    Load caption from file.
-    Caption are formatted like this: tag1, tag2, caption1., caption2.
+    Load caption from file and split out caption sentences.
+
+    Caption are formatted like this: tag1, tag2, sentence caption1., sentence
+    caption2. Optional sentence captions ending with "." are split out so that
+    they are left untouched.
     """
     tags, captions = [], []
     with open(fp, "rt") as fd:
@@ -178,14 +235,26 @@ def process_directory(
     dataset_root: Path,
     output_dir: Path,
     tagset_normalizer: TagSetNormalizer,
+    config: dict,
     blacklist: set = set(),
-    keep_implied=True,
 ):
+    use_underscores = config.get("use_underscores", False)
+    keep_underscores = set(config.get("keep_underscores", ()))
+    keep_implied = config.get("keep_implied", False)
+    if isinstance(keep_implied, list):
+        encode = tagset_normalizer.tag_normalizer.encode
+        keep_implied = {encode(t, t) for t in keep_implied}
+
+    # Running stats
     counter = Counter()
     implied_counter = Counter()
     processed_files = 0
     skipped_files = 0
-    for file in chain(dataset_root.glob("**/*.txt"), dataset_root.glob("**/*.cap*")):
+    blacklist_instances = 0
+    implied_instances = 0
+
+    files = [*dataset_root.glob("**/*.txt"), *dataset_root.glob("**/*.cap*")]
+    for file in tqdm(files):
         if "sample-prompts" in file.name:
             skipped_files += 1
             continue
@@ -193,8 +262,20 @@ def process_directory(
         orig_tags = tags
 
         # Convert tags to ids, separate implied tags
+        tags = [
+            t.lower().replace(" ", "_").replace(r"\(", "(").replace(r"\)", ")")
+            for t in tags
+        ]
+        original_len = len(tags)
+
+        # Encode to integer ids and strip implied tags
         tags, implied = tagset_normalizer.encode(tags, keep_implied=keep_implied)
+        implication_filtered_len = len(tags)
+        implied_instances += original_len - implication_filtered_len
+
+        # Remove blacklisted tags
         tags = [t for t in tags if t not in blacklist]
+        blacklist_instances += implication_filtered_len - len(tags)
 
         # Count tags
         counter.update(tags)
@@ -202,6 +283,10 @@ def process_directory(
 
         # Convert back to strings
         tags = tagset_normalizer.decode(tags)
+        if not use_underscores:
+            tags = [
+                t.replace("_", " ") if t not in keep_underscores else t for t in tags
+            ]
         if tags == orig_tags:
             skipped_files += 1
             continue
@@ -214,10 +299,24 @@ def process_directory(
             fd.write(result)
         processed_files += 1
 
-    return counter, implied_counter, processed_files, skipped_files
+    return dict(
+        counter=counter,
+        implied_counter=implied_counter,
+        processed_files=processed_files,
+        skipped_files=skipped_files,
+        blacklist_instances=blacklist_instances,
+        implied_instances=implied_instances,
+    )
 
 
-def print_topk(counter, tagset_normalizer, n=10, categories=None, implied=False):
+def print_topk(
+    counter: Counter,
+    tagset_normalizer: TagSetNormalizer,
+    config: dict,
+    n=10,
+    categories=None,
+    implied=False,
+):
     if implied:
         implied = "implied "
     else:
@@ -227,6 +326,9 @@ def print_topk(counter, tagset_normalizer, n=10, categories=None, implied=False)
         print(f"\nTop {n} most common {implied}tags in categories: {category_names}")
     else:
         print(f"\nTop {n} most common {implied}tags:")
+
+    use_underscores = config.get("use_underscores", True)
+    keep_underscores = config.get("keep_underscores", set())
 
     filtered_counter = counter
     if categories:
@@ -245,21 +347,33 @@ def print_topk(counter, tagset_normalizer, n=10, categories=None, implied=False)
         if isinstance(tag, int):
             tag_string = tagset_normalizer.tag_normalizer.decode(tag)
             cat = tag_categories[tagset_normalizer.tag_normalizer.tag_categories[tag]]
-            print(f"   {tag_string:<30} count={count:<7} (e621:{cat})")
+            source = f"e621:{cat}"
         else:
-            print(f"   {tag:<30} count={count:<7} (unknown)")
-
-
-def print_blacklist(blacklist, tagset_normalizer):
-    print("\n🚫 Blacklisted tags:")
-    for tag_str in sorted(tagset_normalizer.decode(blacklist)):
-        print(f"   {tag_str}")
+            tag_string = tag
+            source = "unknown"
+        if not use_underscores and tag_string not in keep_underscores:
+            tag_string = tag_string.replace("_", " ")
+        print(f"   {tag_string:<30} count={count:<7} ({source})")
 
 
 def setup_logger(verbose):
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(level=level, format="%(asctime)s - %(levelname)s - %(message)s")
     return logging.getLogger(__name__)
+
+
+def ask_for_confirmation(prompt, default=False):
+    if default:
+        prompt = f"{prompt} (Y/n): "
+    else:
+        prompt = f"{prompt} (y/N): "
+
+    response = input(prompt).strip().lower()
+
+    if response not in "yn":
+        return default
+
+    return response == "y"
 
 
 def main():
@@ -273,31 +387,23 @@ def main():
         "output_dir", type=Path, help="Output directory for normalized tag files"
     )
     parser.add_argument(
+        "-c",
+        "--config",
+        type=Path,
+        help="Toml configuration file, defaults to output_dir/normalize.toml, input_dir/normalize.toml or ./normalize.toml",
+        default=None,
+    )
+    parser.add_argument(
         "-v", "--verbose", action="store_true", help="Enable verbose logging"
     )
     parser.add_argument(
-        "-i", "--keep-implied", action="store_true", help="Keep implied tags"
-    )
-    parser.add_argument(
-        "-b",
-        "--additional-blacklist",
-        action="append",
-        help="Additional tags to add to the blacklist",
-    )
-    parser.add_argument(
-        "-r",
-        "--additional-blacklist-regexp",
-        action="append",
-        help="Additional regular expressions for blacklisting tags",
-    )
-    parser.add_argument(
-        "-O",
-        "--override-base-blacklist",
+        "-f",
+        "--force",
         action="store_true",
-        help="Override the base blacklist and regexp with only the provided additions",
+        help="Don't ask for confirmation for clobbering input files",
     )
     parser.add_argument(
-        "--print-blacklist",
+        "-b", "--print-blacklist",
         action="store_true",
         help="Print the effective list of blacklisted tags",
     )
@@ -318,70 +424,108 @@ def main():
         help="Print the N most common implied tags (default: 100 if flag is used without a value)",
     )
     parser.add_argument(
-        "-c",
+        "-s",
         "--stats-categories",
         action="append",
         choices=list(tag_category2id.keys()) + ["unknown"],
         help="Restrict tag count printing to specific categories or 'unknown'",
     )
-    parser.add_argument(
-        "--print-conflicts",
-        action="store_true",
-        help="Print the conflicts encountered during the construction of the normalization mapping (useful for debugging it)",
-    )
     args = parser.parse_args()
-
     logger = setup_logger(args.verbose)
 
+    # Validate input/output directories
+    input_dir = args.input_dir.resolve()
+    output_dir = args.output_dir.resolve()
+    if not input_dir.is_dir():
+        logger.error(f"Input directory does not exist: {input_dir}")
+        exit(1)
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        logger.error(f"Could not create output directory {output_dir}: {e}")
+        exit(1)
     logger.info("🚀 Starting Tag Normalizer")
-    logger.info(f"Input directory: {args.input_dir}")
-    logger.info(f"Output directory: {args.output_dir}")
+    logger.info(f"Input directory: {input_dir}")
+    logger.info(f"Output directory: {output_dir}")
+
+    if input_dir == output_dir and not args.force:
+        if not ask_for_confirmation(
+            "Input and output directories are the same. This will clobber the input directory. Are you sure you want to continue?",
+            default=False,
+        ):
+            exit(0)
+
+    # Load config file
+    for config_path in [
+        args.config,
+        output_dir / "normalize.toml",
+        input_dir / "normalize.toml",
+        Path(".") / "normalize.toml",
+    ]:
+        if config_path is None:
+            continue
+        if config_path.exists():
+            config_path = config_path.resolve()
+            break
+    else:
+        logger.error(f"Could not find a config file in {input_dir}, {output_dir} or ./")
+        exit(1)
+    logger.info(f"🔧 Using config file: {config_path}")
+    with open(config_path, "rb") as f:
+        config = tomllib.load(f)
 
     logger.info("🔧 Initializing tag normalizer...")
     start_time = time.time()
-    tagset_normalizer = make_tagset_normalizer(warn_conflict=args.print_conflicts)
-    logging.info(f"  Data loaded in {time.time() - start_time:.2f} seconds")
+    tagset_normalizer = make_tagset_normalizer(config)
+    logging.info(f"✅ Data loaded in {time.time() - start_time:.2f} seconds")
 
     logger.info("🚫 Creating blacklist...")
     blacklist = make_blacklist(
         tagset_normalizer,
-        additional_tags=args.additional_blacklist,
-        additional_regexps=args.additional_blacklist_regexp,
-        override_base=args.override_base_blacklist,
+        config,
+        print_blacklist=args.print_blacklist,
     )
     logger.info(f"Blacklist size: {len(blacklist)} tags")
-    if args.print_blacklist:
-        print_blacklist(blacklist, tagset_normalizer)
 
     logger.info("🔍 Processing files...")
     start_time = time.time()
-    counter, implied_counter, processed_files, skipped_files = process_directory(
-        args.input_dir,
-        args.output_dir,
+    stats = process_directory(
+        input_dir,
+        output_dir,
         tagset_normalizer,
+        config,
         blacklist=blacklist,
-        keep_implied=args.keep_implied,
     )
 
     logger.info(
         f"✅ Processing complete! Time taken: {time.time() - start_time:.2f} seconds"
     )
-    logger.info(f"Files processed: {processed_files}")
-    logger.info(f"Files skipped (no changes): {skipped_files}")
-    logger.info(f"Total unique tags: {len(counter)}")
-    logger.info(f"Total tag occurrences: {sum(counter.values())}")
-    if args.print_topk:
+    logger.info(f"Files modified: {stats['processed_files']}")
+    logger.info(f"Files skipped (no changes): {stats['skipped_files']}")
+    counter = stats["counter"]
+    logger.info(f"Unique tags: {len(counter)}")
+    logger.info(f"Tag occurrences: {sum(counter.values())}")
+    unknown_counter = [count for t, count in counter.items() if not isinstance(t, int)]
+    logger.info(f"Unknown tags: {len(unknown_counter)}")
+    logger.info(f"Unknown tags occurrences: {sum(unknown_counter)}")
+    logger.info(f"Removed by blacklist: {stats['blacklist_instances']}")
+    logger.info(f"Removed by implication: {stats['implied_instances']}")
+    if args.print_topk or args.stats_categories:
+        if not args.print_topk:
+            args.print_topk = 100
         print_topk(
             counter,
             tagset_normalizer,
-            args.print_topk,
-            args.stats_categories,
+            config,
+            n=args.print_topk,
+            categories=args.stats_categories,
         )
     if args.print_implied_topk:
         print_topk(
-            implied_counter,
+            stats["implied_counter"],
             tagset_normalizer,
-            args.print_implied_topk,
+            config,
+            n=args.print_implied_topk,
             implied=True,
         )
 

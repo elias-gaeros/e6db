@@ -61,9 +61,26 @@ def dothething(args):
 
     # Deduplicate, global top-k
     neigh_idxs = np.unique(neigh_idxs)
-    scores = scores[neigh_idxs, :].sum(axis=1)
+    scores = scores[neigh_idxs, :].mean(axis=1)
+    rej = None
     if len(neigh_idxs) > global_topk:
-        neigh_idxs = neigh_idxs[np.argpartition(-scores, global_topk)[:global_topk]]
+        partition = np.argpartition(-scores, global_topk)
+        rej = neigh_idxs[partition[global_topk:]]
+        rej_scores = scores[partition[global_topk:]]
+        scores = scores[partition[:global_topk]]
+        neigh_idxs = neigh_idxs[partition[:global_topk]]
+
+    tag_list = " ".join(
+        f"{idx2tag[i]} ({format_tagfreq(tag_rank_to_freq(i))})"
+        for s, i in zip(scores, neigh_idxs)
+    )
+    print("accepted:", tag_list)
+    if rej is not None:
+        tag_list = " ".join(
+            f"{idx2tag[i]} ({format_tagfreq(tag_rank_to_freq(i))}, {s})"
+            for s, i in zip(rej_scores, rej)
+        )
+        print("rejected:", tag_list)
 
     idxs = np.concatenate([sel_idxs, neigh_idxs])
     query_slice = slice(None, len(sel_idxs))
