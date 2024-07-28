@@ -7,6 +7,7 @@ import time
 from collections import Counter
 from itertools import chain
 from pathlib import Path
+import subprocess
 
 try:
     from tqdm import tqdm
@@ -353,26 +354,6 @@ def print_topk(
         print(f"   {tag_string:<30} count={count:<7} ({source})")
 
 
-def setup_logger(verbose):
-    level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(level=level, format="%(asctime)s - %(levelname)s - %(message)s")
-    return logging.getLogger(__name__)
-
-
-def ask_for_confirmation(prompt, default=False):
-    if default:
-        prompt = f"{prompt} (Y/n): "
-    else:
-        prompt = f"{prompt} (y/N): "
-
-    response = input(prompt).strip().lower()
-
-    if response not in "yn":
-        return default
-
-    return response == "y"
-
-
 def main():
     parser = argparse.ArgumentParser(
         description="🏷️  Tag Normalizer - Clean and normalize your tags with ease!"
@@ -381,7 +362,10 @@ def main():
         "input_dir", type=Path, help="Input directory containing tag files"
     )
     parser.add_argument(
-        "output_dir", type=Path, help="Output directory for normalized tag files"
+        "output_dir",
+        type=Path,
+        help="Output directory for normalized tag files",
+        nargs="?",
     )
     parser.add_argument(
         "-c",
@@ -433,10 +417,14 @@ def main():
 
     # Validate input/output directories
     input_dir = args.input_dir.resolve()
-    output_dir = args.output_dir.resolve()
     if not input_dir.is_dir():
         logger.error(f"Input directory does not exist: {input_dir}")
         exit(1)
+    output_dir = args.output_dir
+    if output_dir is None:
+        output_dir = input_dir
+    else:
+        output_dir = output_dir.resolve()
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
     except OSError as e:
@@ -446,19 +434,30 @@ def main():
     logger.info(f"Input directory: {input_dir}")
     logger.info(f"Output directory: {output_dir}")
 
-    if input_dir == output_dir and not args.force:
-        if not ask_for_confirmation(
-            "Input and output directories are the same. This will clobber the input directory. Are you sure you want to continue?",
-            default=False,
+    # Check for overwriting input
+    if input_dir == output_dir:
+        input_lookup = output_lookup = find_files_up_hierarchy(
+            input_dir, [CONFIG_NAME, ".git"]
+        )
+        git_dir = input_lookup.get(".git")
+        if git_dir is not None and is_clean_git_repo(git_dir):
+            logger.warning(
+                "Oh I see you're using git for the dataset! Overwriting input files. This is fine! 🔥"
+            )
+        elif not args.force and not ask_for_confirmation(
+            "The input will be modified in place. Are you sure you want to continue? 💾❌⚠️❓",
         ):
             exit(0)
+    else:
+        input_lookup = find_files_up_hierarchy(input_dir, [CONFIG_NAME])
+        output_lookup = find_files_up_hierarchy(output_dir, [CONFIG_NAME])
 
     # Load config file
     for config_path in [
         args.config,
-        output_dir / "normalize.toml",
-        input_dir / "normalize.toml",
-        Path(".") / "normalize.toml",
+        output_lookup.get(CONFIG_NAME),
+        input_lookup.get(CONFIG_NAME),
+        find_files_up_hierarchy(Path("."), [CONFIG_NAME]).get(CONFIG_NAME),
     ]:
         if config_path is None:
             continue
@@ -528,6 +527,71 @@ def main():
         )
 
     logger.info("👋 Tag Normalizer finished. Have a great day!")
+
+
+CONFIG_NAME = "normalize.toml"
+
+
+def setup_logger(verbose):
+    level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(level=level, format="%(asctime)s - %(levelname)s - %(message)s")
+    return logging.getLogger(__name__)
+
+
+def ask_for_confirmation(prompt, default=False):
+    if default:
+        prompt = f"{prompt} (Y/n): "
+    else:
+        prompt = f"{prompt} (y/N): "
+
+    response = input(prompt).strip().lower()
+
+    if response not in "yn":
+        return default
+
+    return response == "y"
+
+
+def find_files_up_hierarchy(start_path: str, file_names: list[str]) -> dict[str, Path]:
+    start_path = Path(start_path).resolve()
+    found_files = {}
+
+    current_path = start_path
+    while True:
+        for file_name in file_names:
+            file_path = current_path / file_name
+            if file_path.exists() and file_name not in found_files:
+                found_files[file_name] = file_path
+
+        parent = current_path.parent
+        if len(found_files) == len(file_names) or parent == current_path:
+            break
+
+        current_path = parent
+
+    return found_files
+
+
+def is_clean_git_repo(directory):
+    git_cmd = ["git", "-C", str(directory.parent.resolve())]
+    try:
+        # Check if it's a Git repository and if it's clean
+        subprocess.run(
+            [*git_cmd, "rev-parse", "--is-inside-work-tree"],
+            check=True,
+            capture_output=True,
+        )
+        status_output = subprocess.run(
+            [*git_cmd, "status", "--porcelain"], check=True, capture_output=True
+        ).stdout
+        n_modified = len(status_output.splitlines())
+        if n_modified == 0:
+            return True
+        else:
+            logging.warning("🚫 Found a git repo, but it's dirty.")
+            return False
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
 
 
 if __name__ == "__main__":
