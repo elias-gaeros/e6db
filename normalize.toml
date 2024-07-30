@@ -1,6 +1,13 @@
 # Tag Normalization Configuration
 
-# Use Underscores: Determines whether to use underscores or spaces in output tags
+# Include Filename Regexp: Only file matching this regexp will be treated as
+# captions. This is full-match regexps that must match the entire filename.
+# Default: r".*?\.(txt|cap.*)$"
+include_filename_regexp = ".*?\\.(txt|cap.*)$"
+
+# Exclude Filename Regexp: Files matching this regexp will be excluded.
+# Default: ".*samples?-prompts?.*"
+exclude_filename_regexp = ".*samples?-prompts?.*"
 # Default: false (use spaces)
 use_underscores = false
 

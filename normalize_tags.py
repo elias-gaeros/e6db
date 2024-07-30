@@ -221,6 +221,9 @@ def process_directory(
     if isinstance(keep_implied, list):
         encode = tagset_normalizer.tag_normalizer.encode
         keep_implied = {encode(t, t) for t in keep_implied}
+    logger.debug(f"🔍 Gathering file list...")
+    files = walk_directory(dataset_root, config)
+    logger.info("💾 Processing %d files...", len(files))
 
     # Running stats
     counter = Counter()
@@ -229,12 +232,7 @@ def process_directory(
     skipped_files = 0
     blacklist_instances = 0
     implied_instances = 0
-
-    files = [*dataset_root.glob("**/*.txt"), *dataset_root.glob("**/*.cap*")]
     for file in tqdm(files):
-        if "sample-prompts" in file.name:
-            skipped_files += 1
-            continue
         tags = []
         with open(file, "rt") as fd:
             for chunk in RE_SEP.split(fd.read()):
@@ -286,6 +284,21 @@ def process_directory(
         blacklist_instances=blacklist_instances,
         implied_instances=implied_instances,
     )
+
+
+def walk_directory(dataset_root: Path, config: dict):
+    exclude_re = re.compile(
+        config.get("exclude_filename_regexp", r".*samples?-prompts?.*")
+    )
+    include_re = re.compile(config.get("include_filename_regexp", r".*?\.(txt|cap.*)$"))
+    res = []
+    for root, dirs, files in dataset_root.walk(follow_symlinks=True):
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        for file in files:
+            if not include_re.fullmatch(file) or exclude_re.fullmatch(file):
+                continue
+            res.append(root / file)
+    return res
 
 
 def print_topk(
@@ -465,7 +478,6 @@ def main():
     )
     logger.info(f"Blacklist size: {len(blacklist)} tags")
 
-    logger.info("🔍 Processing files...")
     start_time = time.time()
     stats = process_directory(
         input_dir,
