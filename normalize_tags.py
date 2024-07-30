@@ -204,6 +204,7 @@ def make_blacklist(
 
 
 RE_SEP = re.compile(r"[,\n]")  # Split on commas and newlines
+RE_ESCAPES = re.compile(r"\\+?(?=[():])")  # Match backslash escapes before :()
 
 
 def load_caption(fp: Path):
@@ -258,10 +259,7 @@ def process_directory(
         orig_tags = tags
 
         # Convert tags to ids, separate implied tags
-        tags = [
-            t.lower().replace(" ", "_").replace(r"\(", "(").replace(r"\)", ")")
-            for t in tags
-        ]
+        tags = [RE_ESCAPES.sub("", t.lower().replace(" ", "_")) for t in tags]
         original_len = len(tags)
 
         # Encode to integer ids and strip implied tags
