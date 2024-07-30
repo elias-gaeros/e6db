@@ -24,6 +24,7 @@ except ImportError:
 
 from e6db.utils import TagSetNormalizer, tag_categories, tag_category2id
 
+logger = logging.getLogger(__name__)
 DATA_DIR = Path(__file__).resolve().parent / "data"
 RE_PARENS_SUFFIX = re.compile(r"_\([^)]+\)$")
 
@@ -138,7 +139,7 @@ def make_tagset_normalizer(config: dict) -> TagSetNormalizer:
         if tag2id[old] == tag2id[new]:
             tag_normalizer.rename_output(old, new)
         else:
-            logging.warning(
+            logger.warning(
                 f"Cannot rename {old} -> {new}: old tag id={tag2id[old]} vs. new tag id={tag2id[new]})"
             )
 
@@ -393,7 +394,7 @@ def main():
         help="Restrict tag count printing to specific categories or 'unknown'",
     )
     args = parser.parse_args()
-    logger = setup_logger(args.verbose)
+    setup_logger(args.verbose)
 
     # Validate input/output directories
     input_dir = args.input_dir.resolve()
@@ -454,7 +455,7 @@ def main():
     logger.info("🔧 Initializing tag normalizer...")
     start_time = time.time()
     tagset_normalizer = make_tagset_normalizer(config)
-    logging.info(f"✅ Data loaded in {time.time() - start_time:.2f} seconds")
+    logger.info(f"✅ Data loaded in {time.time() - start_time:.2f} seconds")
 
     logger.info("🚫 Creating blacklist...")
     blacklist = make_blacklist(
@@ -515,7 +516,6 @@ CONFIG_NAME = "normalize.toml"
 def setup_logger(verbose):
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(level=level, format="%(asctime)s - %(levelname)s - %(message)s")
-    return logging.getLogger(__name__)
 
 
 def ask_for_confirmation(prompt, default=False):
@@ -568,7 +568,7 @@ def is_clean_git_repo(directory):
         if n_modified == 0:
             return True
         else:
-            logging.warning("🚫 Found a git repo, but it's dirty.")
+            logger.warning("🚫 Found a git repo, but it's dirty.")
             return False
     except (subprocess.CalledProcessError, FileNotFoundError):
         return False
