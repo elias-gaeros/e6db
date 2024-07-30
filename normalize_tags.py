@@ -47,8 +47,6 @@ def make_tagset_normalizer(config: dict) -> TagSetNormalizer:
 
     # Create additional aliases for tags using simple rules
     def input_map(tag, tid):
-        yield tag
-
         # Make an alias without parentheses, it might conflict but we'll handle
         # it depending on `on_alias_conflict` config value.
         without_suffix = RE_PARENS_SUFFIX.sub("", tag)

@@ -205,8 +205,11 @@ class TagNormalizer:
             orig = self.tag2idx[orig]
         self.idx2tag[orig] = dest
 
-    def map_inputs(self, mapfun: InMapFun, on_conflict="raise") -> "TagNormalizer":
-        res = type(self)(({}, self.idx2tag, self.tag_categories))
+    def map_inputs(
+        self, mapfun: InMapFun, prepopulate=True, on_conflict="raise"
+    ) -> "TagNormalizer":
+        tag2idx = self.tag2idx.copy() if prepopulate else {}
+        res = type(self)((tag2idx, self.idx2tag, self.tag_categories))
         for tag, tid in self.tag2idx.items():
             res.add_input_mappings(mapfun(tag, tid), tid, on_conflict=on_conflict)
         return res
