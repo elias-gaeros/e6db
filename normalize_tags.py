@@ -73,7 +73,7 @@ def make_tagset_normalizer(config: dict) -> TagSetNormalizer:
 
         # Recognize tags where ':' were replaced by a space (aspect ratio)
         if ":" in tag:
-            yield tag.replace(":", " ")
+            yield tag.replace(":", "_")
 
     on_alias_conflict = config.get("on_alias_conflict", None)
     tagset_normalizer = tagset_normalizer.map_inputs(
