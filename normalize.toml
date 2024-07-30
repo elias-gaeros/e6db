@@ -8,12 +8,27 @@ include_filename_regexp = ".*?\\.(txt|cap.*)$"
 # Exclude Filename Regexp: Files matching this regexp will be excluded.
 # Default: ".*samples?-prompts?.*"
 exclude_filename_regexp = ".*samples?-prompts?.*"
+
+# Use Underscores: Determines whether to use underscores or spaces in output
+# tags.
 # Default: false (use spaces)
 use_underscores = false
 
-# Keep Implied: Whether to keep implied tags or remove them. Can also be a list of tags
+# Keep Implied: Whether to keep implied tags or remove them. Can also be a list
+# of tags.
 # Default: false (remove implied tags)
 keep_implied = false
+
+# Minimum Implication Frequency: tags with a number of e621 posts bellow this
+# value cause the tags it implies to be added instead of being removed.
+# Default: 0 (disabled)
+min_antecedent_freq = 200
+
+# Drop rare implication antecedents: tags with a number of e621 posts bellow
+# this values will be dropped if they imply other tags. Must be equal of bellow
+# min_implication_freq. These implications thus behave like aliases.
+# Default: 0 (disabled)
+drop_antecedent_freq = 50
 
 # Artist By Prefix: Whether to add "by_" prefix to artist tags
 # Default: true
@@ -42,8 +57,8 @@ blacklist = [
     "edit_request",
 ]
 
-# Blacklist Regular Expressions: Tags matching these regexps will be removed
-# These are full-match regexps, so they must match the entire tag
+# Blacklist Regular Expressions: Tags matching these regexps will be removed.
+# These are full-match regexps, so they must match the entire tag.
 blacklist_regexp = [
     "(\\d+s?|\\d+:\\d+)", # Numbers, years and aspect ratio
     ".*?_at_source",
@@ -70,8 +85,8 @@ keep_underscores = [
 ]
 
 # Remove parentheses suffixes that matches the tag's category like _(species) or
-# _(character) if it doesn't conflict with another tag (when
-# on_alias_conflict="ignore") 
+# _(character) if it doesn't conflict with another tag 
+# (when on_alias_conflict="ignore") 
 # Default: true
 remove_parens = true
 

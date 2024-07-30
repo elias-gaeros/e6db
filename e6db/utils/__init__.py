@@ -1,12 +1,11 @@
 "Python only utils (no dependencies)"
-from pathlib import Path
 import gzip
 import json
-import warnings
-import math
 import logging
+import math
+import warnings
+from pathlib import Path
 from typing import Callable, Iterable
-
 
 logger = logging.getLogger(__name__)
 
@@ -270,7 +269,11 @@ class TagSetNormalizer:
             return self.implications_rej.get(tag, ())
 
     def encode(
-        self, tags: Iterable[str], keep_implied: bool | set[int] = False
+        self,
+        tags: list[str],
+        keep_implied: bool | set[int] = False,
+        max_antecedent_rank: int | None = None,
+        drop_antecedent_rank: int | None = None,
     ) -> tuple[list[int | str], set[int]]:
         """
         Encode a list of string as numerical ids and strip implied tags.
@@ -282,23 +285,45 @@ class TagSetNormalizer:
         * a list of tag ids and unknown tag strings,
         * a list of implied tag ids.
         """
-        implied = set()
-        res = []
-        encode = self.tag_normalizer.tag2idx.get
+        tag2idx = self.tag_normalizer.tag2idx
+        N = len(tag2idx)
+        max_antecedent_rank = max_antecedent_rank or N + 1
+        drop_antecedent_rank = drop_antecedent_rank or N + 1
         get_implied = self.implications.get
         get_implied_rej = self.implications_rej.get
-        for tag in tags:
-            tag = encode(tag, tag)
-            implied.update(
-                get_implied(tag, ())
-                if isinstance(tag, int)
-                else get_implied_rej(tag, ())
-            )
-            res.append(tag)
+
+        stack = [tag2idx.get(tag, tag) for tag in tags[::-1]]
+        implied = set()
+        res = dict()  # dict as a cheap ordered set
+        while stack:
+            tag = stack.pop()
+            if isinstance(tag, int):
+                antecedent_rank = tag
+                consequents = get_implied(tag)
+            else:
+                # the tag might be a very rare antecedent (less than two posts)
+                # that doesn't have a tag id
+                antecedent_rank = N
+                consequents = get_implied_rej(tag)
+            if consequents:
+                if antecedent_rank < max_antecedent_rank:
+                    implied.update(consequents)
+                else:
+                    # The implied tags from low frequency antecedent (high rank)
+                    # are added to the list and instead the antecedent may be
+                    # dropped
+                    stack.extend(consequents)
+                    if antecedent_rank >= drop_antecedent_rank:
+                        continue
+            res[tag] = None
+        res = res.keys()
+
         if not keep_implied:
             res = [t for t in res if t not in implied]
         elif isinstance(keep_implied, set):
             res = [t for t in res if t not in implied or t in keep_implied]
+        else:
+            res = list(res)
         return res, implied
 
     def decode(self, tags: Iterable[int | str]) -> list[str]:

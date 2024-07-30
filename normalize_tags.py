@@ -22,7 +22,12 @@ except ImportError:
     except ImportError:
         import toml as tomllib
 
-from e6db.utils import TagSetNormalizer, tag_categories, tag_category2id
+from e6db.utils import (
+    TagSetNormalizer,
+    tag_categories,
+    tag_category2id,
+    tag_freq_to_rank,
+)
 
 logger = logging.getLogger(__name__)
 DATA_DIR = Path(__file__).resolve().parent / "data"
@@ -215,12 +220,28 @@ def process_directory(
     config: dict,
     blacklist: set = set(),
 ):
+    n_tags = len(tagset_normalizer.tag_normalizer.tag2idx)
     use_underscores = config.get("use_underscores", False)
     keep_underscores = set(config.get("keep_underscores", ()))
+
     keep_implied = config.get("keep_implied", False)
     if isinstance(keep_implied, list):
         encode = tagset_normalizer.tag_normalizer.encode
         keep_implied = {encode(t, t) for t in keep_implied}
+    max_antecedent_rank = n_tags + 1
+    min_antecedent_freq = config.get("min_antecedent_freq", 0)
+    if min_antecedent_freq >= 1.0:
+        max_antecedent_rank = math.ceil(tag_freq_to_rank(min_antecedent_freq))
+    drop_antecedent_rank = n_tags + 1
+    drop_antecedent_freq = config.get("drop_antecedent_freq", 0)
+    if drop_antecedent_freq >= 1.0:
+        drop_antecedent_rank = math.ceil(tag_freq_to_rank(drop_antecedent_freq))
+        if drop_antecedent_rank < max_antecedent_rank:
+            logger.warning(
+                "drop_antecedents_freq must be smaller or equal to min_antecedent_freq"
+            )
+    logger.debug(f"{keep_implied=} {max_antecedent_rank=} {drop_antecedent_rank=}")
+
     logger.debug(f"🔍 Gathering file list...")
     files = walk_directory(dataset_root, config)
     logger.info("💾 Processing %d files...", len(files))
@@ -247,7 +268,12 @@ def process_directory(
         original_len = len(tags)
 
         # Encode to integer ids and strip implied tags
-        tags, implied = tagset_normalizer.encode(tags, keep_implied=keep_implied)
+        tags, implied = tagset_normalizer.encode(
+            tags,
+            keep_implied=keep_implied,
+            max_antecedent_rank=max_antecedent_rank,
+            drop_antecedent_rank=drop_antecedent_rank,
+        )
         implication_filtered_len = len(tags)
         implied_instances += original_len - implication_filtered_len
 
