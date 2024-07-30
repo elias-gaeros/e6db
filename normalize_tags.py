@@ -2,12 +2,12 @@
 
 import argparse
 import logging
+import math
 import re
+import subprocess
 import time
 from collections import Counter
-from itertools import chain
 from pathlib import Path
-import subprocess
 
 try:
     from tqdm import tqdm
@@ -207,27 +207,6 @@ RE_SEP = re.compile(r"[,\n]")  # Split on commas and newlines
 RE_ESCAPES = re.compile(r"\\+?(?=[():])")  # Match backslash escapes before :()
 
 
-def load_caption(fp: Path):
-    """
-    Load caption from file and split out caption sentences.
-
-    Caption are formatted like this: tag1, tag2, sentence caption1., sentence
-    caption2. Optional sentence captions ending with "." are split out so that
-    they are left untouched.
-    """
-    tags, captions = [], []
-    with open(fp, "rt") as fd:
-        for chunk in RE_SEP.split(fd.read()):
-            chunk = chunk.strip()
-            if not chunk:
-                continue
-            if chunk.endswith("."):
-                captions.append(chunk)
-            else:
-                tags.append(chunk)
-    return tags, captions
-
-
 def process_directory(
     dataset_root: Path,
     output_dir: Path,
@@ -255,7 +234,13 @@ def process_directory(
         if "sample-prompts" in file.name:
             skipped_files += 1
             continue
-        tags, captions = load_caption(file)
+        tags = []
+        with open(file, "rt") as fd:
+            for chunk in RE_SEP.split(fd.read()):
+                chunk = chunk.strip()
+                if not chunk:
+                    continue
+                tags.append(chunk)
         orig_tags = tags
 
         # Convert tags to ids, separate implied tags
@@ -288,9 +273,8 @@ def process_directory(
         # Write output
         output_file = output_dir / file.relative_to(dataset_root)
         output_file.parent.mkdir(parents=True, exist_ok=True)
-        result = ", ".join(chain(tags, captions))
         with open(output_file, "wt") as fd:
-            fd.write(result)
+            fd.write(", ".join(tags))
         processed_files += 1
 
     return dict(
@@ -334,7 +318,7 @@ def print_topk(
                 ]
                 if cat in categories:
                     filtered_counter[tag] = count
-            elif "unknown" in categories:
+            elif "unknown" in categories and tag[-1] != ".":
                 filtered_counter[tag] = count
 
     for tag, count in filtered_counter.most_common(n):
