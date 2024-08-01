@@ -26,7 +26,7 @@ min_antecedent_freq = 200
 
 # Drop rare implication antecedents: tags with a number of e621 posts bellow
 # this values will be dropped if they imply other tags. Must be equal of bellow
-# min_implication_freq. These implications thus behave like aliases.
+# min_antecedent_freq. These implications thus behave like aliases.
 # Default: 0 (disabled)
 drop_antecedent_freq = 50
 
