@@ -19,9 +19,10 @@ def convert_db_export_to_parquet(
     paths = get_csv_paths(dumps_path)
     out_path = dumps_path if out_path is None else Path(out_path)
 
+    post_parquet_paths, tag_freqs = read_posts_csv(paths["posts"], out_path)
+
     logging.info("Reading tag CSVs")
     tags, aliases, impls = read_tags_csvs(paths)
-    post_parquet_paths, tag_freqs = read_posts_csv(paths["posts"], out_path)
 
     logging.info("Normalizing tags")
     tags, tag2index, impl_mapped, rejtag_impls_csq_mapped = normalize_tag_list(
@@ -88,7 +89,7 @@ def read_tags_csvs(paths, alias_implications=True):
     """Reads tags, tag_aliases, tag_implications CSVs"""
     tags = pl.read_csv(
         paths["tags"],
-        dtypes=[pl.Categorical, pl.UInt8],
+        schema_overrides=[pl.Categorical, pl.UInt8],
         columns=["name", "category"],
     )
 
@@ -173,8 +174,8 @@ def normalize_tag_list(tag_freqs, tags, aliases, impls, min_freq=2, blacklist=No
             tags.lazy(), how="left", left_on="tag", right_on="name", validate="1:1"
         )
         .with_columns(col("category").fill_null(0))
-        .sort("freq", descending=True)
         .filter(col("freq") >= min_freq)
+        .sort([-col("freq").cast(pl.Int32), col("tag").cast(pl.String)])
         .collect()
     )
 
@@ -229,7 +230,7 @@ def normalize_tag_list(tag_freqs, tags, aliases, impls, min_freq=2, blacklist=No
 def read_posts_csv(
     posts_csv_path,
     out_path,
-    batch_size=1 << 18,
+    batch_size=1 << 17,
     write_parquets=True,
     rating_to_tag=True,
 ):
@@ -249,7 +250,7 @@ def read_posts_csv(
         image_height=pl.Int32,
         tag_string=pl.String,
         locked_tags=pl.String,
-        fav_count=pl.UInt32,
+        fav_count=pl.UInt16,
         file_ext=pl.String,
         parent_id=pl.UInt32,
         change_seq=pl.UInt32,
@@ -264,7 +265,7 @@ def read_posts_csv(
         is_flagged=pl.String,
         score=pl.Int16,
         up_score=pl.UInt16,
-        down_score=pl.UInt16,
+        down_score=pl.Int16,
         is_rating_locked=pl.String,
         is_status_locked=pl.String,
         is_note_locked=pl.String,
@@ -287,19 +288,26 @@ def read_posts_csv(
         "is_deleted",
         "score",
         "up_score",
+        "down_score",
     ]
+    # Conversions that can only be done after filtering
     columns_remaps = [
         col("created_at").str.to_datetime("%Y-%m-%d %H:%M:%S%.f"),
         col("md5").str.decode("hex"),
         col("image_width").cast(pl.UInt16),
         col("image_height").cast(pl.UInt16),
         col("tag_string").str.split(" "),
-        col("fav_count").cast(pl.UInt16),
         col("comment_count").cast(pl.UInt16),
         col("up_score").cast(pl.UInt16),
+        (-col("down_score")).cast(pl.UInt16),
     ]
     reader = pl.read_csv_batched(
-        posts_csv_path, columns=column_selections, dtypes=schema, batch_size=batch_size
+        posts_csv_path,
+        columns=column_selections,
+        schema_overrides=schema,
+        batch_size=batch_size,
+        low_memory=False,
+        n_threads=1,
     )
 
     if rating_to_tag is True:
@@ -315,70 +323,70 @@ def read_posts_csv(
     parquet_paths = []
     progress = tqdm(desc=f"Reading {posts_csv_path.name}")
     while True:
-        batch = reader.next_batches(1)
-        if not batch:
+        batches = reader.next_batches(1)
+        if batches is None:
             break
-        (chunk_df,) = batch
-        del batch
-
-        chunk_df = (
-            chunk_df.lazy()
-            # Filtering
-            .filter(col("file_ext").is_in(("jpg", "png", "webp")), is_deleted="f").drop(
-                "is_deleted"
-            )
-            # Projection
-            .with_columns(*columns_remaps)
-        )
-        if isinstance(rating_to_tag, pl.DataFrame):
+        for chunk_df in batches:
             chunk_df = (
-                chunk_df.join(rating_to_tag.lazy(), how="left", on="rating")
-                .with_columns(col("tag_string").list.concat([col("rating_tag")]))
-                .drop("rating_tag")
+                chunk_df.lazy()
+                # Filtering
+                .filter(
+                    col("file_ext").is_in(("jpg", "png", "webp")), is_deleted="f"
+                ).drop("is_deleted")
+                # Projection
+                .with_columns(columns_remaps)
             )
-        chunk_df = chunk_df.with_columns(
-            col("tag_string").cast(pl.List(pl.Categorical))
-        ).collect(streaming=True)
-
-        if write_parquets:
-            parquet_path = out_path / f"posts-{batch_idx:03}.parquet"
-            parquet_paths.append(parquet_path)
-            chunk_df.write_parquet(parquet_path, compression="zstd")
-
-        # Count tag in the batch, accumulate frequencies
-        chunk_tag_freqs = (
-            chunk_df.lazy()
-            .select(tag="tag_string")
-            .explode("tag")
-            .group_by("tag")
-            .len()
-            .select("tag", freq="len")
-            .collect()
-        )
-        del chunk_df
-        if tag_freqs is None:
-            tag_freqs = chunk_tag_freqs
-        else:
-            tag_freqs = (
-                tag_freqs.lazy()
-                .join(
-                    chunk_tag_freqs.lazy(),
-                    on="tag",
-                    how="outer_coalesce",  # validate='1:1' <- needed for streaming, wth?
+            if isinstance(rating_to_tag, pl.DataFrame):
+                chunk_df = (
+                    chunk_df.join(rating_to_tag.lazy(), how="left", on="rating")
+                    .with_columns(col("tag_string").list.concat([col("rating_tag")]))
+                    .drop("rating_tag")
                 )
-                .select(
-                    "tag",
-                    freq=col("freq").fill_null(0) + col("freq_right").fill_null(0),
-                )
-                .collect(streaming=False)
+            chunk_df = chunk_df.with_columns(
+                col("tag_string").cast(pl.List(pl.Categorical))
+            ).collect(streaming=True)
+
+            if write_parquets:
+                parquet_path = out_path / f"posts-{batch_idx:03}.parquet"
+                parquet_paths.append(parquet_path)
+                chunk_df.write_parquet(parquet_path, compression="zstd")
+
+            # Count tag in the batch, accumulate frequencies
+            chunk_tag_freqs = (
+                chunk_df.lazy()
+                .select(tag="tag_string")
+                .explode("tag")
+                .group_by("tag")
+                .len()
+                .select("tag", freq="len")
+                .collect()
             )
-        del chunk_tag_freqs
+            chunk_n_posts = len(chunk_df)
+            del chunk_df
+            if tag_freqs is None:
+                tag_freqs = chunk_tag_freqs
+            else:
+                tag_freqs = (
+                    tag_freqs.lazy()
+                    .join(
+                        chunk_tag_freqs.lazy(),
+                        on="tag",
+                        how="full",  # validate='1:1' <- needed for streaming, wth?
+                        coalesce=True,
+                    )
+                    .select(
+                        "tag",
+                        freq=col("freq").fill_null(0) + col("freq_right").fill_null(0),
+                    )
+                    .collect(streaming=False)
+                )
+            del chunk_tag_freqs
 
-        batch_idx += 1
-        progress.update()
+            batch_idx += 1
+            progress.update(chunk_n_posts)
 
     progress.close()
-    return parquet_paths, tag_freqs.rechunk()
+    return parquet_paths, tag_freqs
 
 
 def post_process_posts(
