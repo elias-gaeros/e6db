@@ -15,12 +15,14 @@ try:
 except ImportError:
     tqdm = lambda x: x
 
+CONFIG_OPEN_MODE = "rb"
 try:
     import tomllib
 except ImportError:
     try:
         import tomli as tomllib
     except ImportError:
+        CONFIG_OPEN_MODE = "rt"
         import toml as tomllib
 
 from e6db.utils import (
@@ -491,7 +493,7 @@ def main():
         logger.error(f"Could not find a config file in {input_dir}, {output_dir} or ./")
         exit(1)
     logger.info(f"🔧 Using config file: {config_path}")
-    with open(config_path, "rb") as f:
+    with open(config_path, CONFIG_OPEN_MODE) as f:
         config = tomllib.load(f)
 
     logger.info("🔧 Initializing tag normalizer...")
