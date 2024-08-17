@@ -3,6 +3,7 @@
 import argparse
 import logging
 import math
+import os
 import re
 import subprocess
 import time
@@ -318,8 +319,10 @@ def walk_directory(dataset_root: Path, config: dict):
     )
     include_re = re.compile(config.get("include_filename_regexp", r".*?\.(txt|cap.*)$"))
     res = []
-    for root, dirs, files in dataset_root.walk(follow_symlinks=True):
+    for root, dirs, files in os.walk(dataset_root, followlinks=True):
         dirs[:] = [d for d in dirs if not d.startswith(".")]
+        if files:
+            root = Path(root)
         for file in files:
             if not include_re.fullmatch(file) or exclude_re.fullmatch(file):
                 continue
