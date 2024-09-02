@@ -257,18 +257,23 @@ def process_directory(
     blacklist_instances = 0
     implied_instances = 0
     for file in tqdm(files):
-        tags = []
-        with open(file, "rt", encoding="utf-8") as fd:
-            for chunk in RE_SEP.split(fd.read()):
-                chunk = chunk.strip()
-                if not chunk:
-                    continue
-                tags.append(chunk)
-        orig_tags = tags
+        try:
+            with open(file, "rt", encoding="utf-8") as fd:
+                content = fd.read()
+        except ValueError as e:
+            logging.warning('Failed to read "%s": %s', file, e)
+            continue
+
+        orig_tags = tags = []
+        for chunk in RE_SEP.split(content):
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+            tags.append(chunk)
+        original_len = len(tags)
 
         # Convert tags to ids, separate implied tags
         tags = [RE_ESCAPES.sub("", t.lower().replace(" ", "_")) for t in tags]
-        original_len = len(tags)
 
         # Encode to integer ids and strip implied tags
         tags, implied = tagset_normalizer.encode(
