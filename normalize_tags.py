@@ -258,7 +258,7 @@ def process_directory(
     implied_instances = 0
     for file in tqdm(files):
         tags = []
-        with open(file, "rt") as fd:
+        with open(file, "rt", encoding="utf-8") as fd:
             for chunk in RE_SEP.split(fd.read()):
                 chunk = chunk.strip()
                 if not chunk:
@@ -301,7 +301,7 @@ def process_directory(
         # Write output
         output_file = output_dir / file.relative_to(dataset_root)
         output_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(output_file, "wt") as fd:
+        with open(output_file, "wt", encoding="utf-8") as fd:
             fd.write(", ".join(tags))
         processed_files += 1
 
@@ -493,7 +493,11 @@ def main():
         logger.error(f"Could not find a config file in {input_dir}, {output_dir} or ./")
         exit(1)
     logger.info(f"🔧 Using config file: {config_path}")
-    with open(config_path, CONFIG_OPEN_MODE) as f:
+    with open(
+        config_path,
+        CONFIG_OPEN_MODE,
+        encoding="utf-8" if CONFIG_OPEN_MODE == "rt" else None,
+    ) as f:
         config = tomllib.load(f)
 
     logger.info("🔧 Initializing tag normalizer...")
