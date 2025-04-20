@@ -56,8 +56,8 @@ def make_tagset_normalizer(config: dict) -> TagSetNormalizer:
 
     # Create additional aliases for tags using simple rules
     def input_map(tag, tid):
-        # Make an alias without parentheses, it might conflict but we'll handle
-        # it depending on `on_alias_conflict` config value.
+        # Make an alias without parentheses, it might conflict in which case
+        # the new mapping will be ignored.
         without_suffix = RE_PARENS_SUFFIX.sub("", tag)
         had_suffix = tag != without_suffix
         if had_suffix:
@@ -84,17 +84,12 @@ def make_tagset_normalizer(config: dict) -> TagSetNormalizer:
         if ":" in tag:
             yield tag.replace(":", "_")
 
-    on_alias_conflict = config.get("on_alias_conflict", None)
-    tagset_normalizer = tagset_normalizer.map_inputs(
-        input_map,
-        # on_conflict choices: "silent", "overwrite", "overwrite_rarest",
-        # "warn", "raise", use "warn" to debug conflicts.
-        on_conflict=on_alias_conflict or "ignore",
-    )
+    tagset_normalizer = tagset_normalizer.map_inputs(input_map, on_conflict="ignore")
     tag_normalizer = tagset_normalizer.tag_normalizer
     tag2id = tag_normalizer.tag2idx
 
     # Apply custom input mappings
+    on_alias_conflict = config.get("on_alias_conflict", None)
     for antecedent, consequent in config.get("aliases", {}).items():
         antecedent = antecedent.replace(" ", "_")
         consequent = consequent.replace(" ", "_")
@@ -127,30 +122,62 @@ def make_tagset_normalizer(config: dict) -> TagSetNormalizer:
     artist_by_prefix = config.get("artist_by_prefix", True)
 
     def map_output(tag, tid):
+        # Removing _(category) suffix and "by_" prefix in the id2tag mapping
         cat = tagid2cat[tid] if tid is not None else -1
+        new_tag = output_renames.get(tag)
+        if new_tag is not None:
+            new_tid = tag2id.get(new_tag)
+            if (
+                new_tid == tid
+            ):  # Check if input_map created an alias from new_tag -> tid
+                return new_tag
+            else:
+                new_tag_old_meaning = tag_normalizer.idx2tag[new_tid]
+                # Chances are that new_tag already existed with a different id
+                if new_tag_old_meaning == new_tag:
+                    reason = "already existed (different meaning)"
+                else:
+                    reason = f"conflict with {new_tag_old_meaning!r}"
+
+                # User supplied, so we warn when there is a conflict
+                logger.warning(
+                    f"Failed to rename output %r -> %r: %s",
+                    tag,
+                    new_tag,
+                    reason,
+                )
+
         if remove_parens:
             without_suffix = tag.removesuffix(f"_({tag_categories[cat]})")
-            if without_suffix != tag and tag2id.get(without_suffix) == tid:
+            # Only act if a conflict free input alias could be defined
+            no_suffix_tid = tag2id.get(without_suffix)
+            if no_suffix_tid == tid:
                 tag = without_suffix
+            else:
+                logger.debug(
+                    f"Failed to rename output %r -> %r: conflict with %r",
+                    tag,
+                    without_suffix,
+                    no_suffix_tid and tag_normalizer.idx2tag[no_suffix_tid],
+                )
+
         if cat == cat_artist and artist_by_prefix and not tag.startswith("by_"):
             tag_wby = f"by_{tag}"
-            if tag2id.get(tag_wby) == tid:
+            tag_wby_tid = tag2id.get(tag_wby)
+            if tag_wby_tid == tid:
                 tag = tag_wby
+            else:
+                logger.debug(
+                    f"Failed to rename %r -> %r: conflict with %r",
+                    tag,
+                    tag_wby,
+                    no_suffix_tid and tag_normalizer.idx2tag[no_suffix_tid],
+                )
         return tag
 
-    tagset_normalizer = tagset_normalizer.map_outputs(map_output)
-    tag_normalizer = tagset_normalizer.tag_normalizer
-    tag2id = tag_normalizer.tag2idx
-
-    # Apply custom output renames
-    for old, new in output_renames.items():
-        if tag2id[old] == tag2id[new]:
-            tag_normalizer.rename_output(old, new)
-        else:
-            logger.warning(
-                f"Cannot rename {old} -> {new}: old tag id={tag2id[old]} vs. new tag id={tag2id[new]})"
-            )
-
+    tagset_normalizer = tagset_normalizer.map_outputs(
+        map_output, ensure_indepotency=True
+    )
     return tagset_normalizer
 
 
@@ -212,7 +239,7 @@ def make_blacklist(
     return blacklist
 
 
-RE_SEP = re.compile(r"[,\n]")  # Split on commas and newlines
+# Regular expression to match backslash escapes before certain characters
 RE_ESCAPES = re.compile(r"\\+?(?=[():])")  # Match backslash escapes before :()
 
 
@@ -227,10 +254,12 @@ def process_files(
     max_antecedent_rank: int,
     drop_antecedent_rank: int,
     blacklist: set = set(),
+    tag_separator_regexp: str = r"[,\n]",
+    tag_section_pattern: str = r"(?P<tags>.*?)",
 ):
     """
     Process a list of tag files, normalizing tags according to the provided parameters.
-    
+
     Args:
         files: List of files to process
         output_dir: Directory where processed files will be written
@@ -242,20 +271,26 @@ def process_files(
         max_antecedent_rank: Only consider implications from tags with rank <= this value
         drop_antecedent_rank: Don't drop antecedent tags with rank <= this value
         blacklist: Set of tag IDs that should be filtered out
-        
+        tag_separator_regexp: Regular expression pattern for splitting tags in input files
+        tag_section_pattern: Regex pattern with named groups for extracting the tag section
+
     Returns:
         Dictionary with statistics about the processing operation
     """
     logger.info("💾 Processing %d files...", len(files))
 
+    # Compile regular expressions
+    tag_sep_re = re.compile(tag_separator_regexp)
+    section_pattern_re = re.compile(tag_section_pattern, re.DOTALL)
+
     # Initialize statistics counters
-    counter = Counter()  # Count occurrences of each tag
-    implied_counter = Counter()  # Count occurrences of implied tags that were removed
+    counter = Counter()  # Counter for each remaining tag
+    implied_counter = Counter()  # Counter for each implied tag that was removed
     processed_files = 0  # Number of files that were modified
     skipped_files = 0  # Number of files that didn't need changes
     blacklist_instances = 0  # Number of tag instances removed due to blacklist
     implied_instances = 0  # Number of tag instances removed due to implications
-    
+
     # Process each file
     for file in tqdm(files):
         try:
@@ -266,13 +301,37 @@ def process_files(
             logging.warning('Failed to read "%s": %s', file, e)
             continue
 
+        # Extract tag section if configured
+        prefix = ""
+        suffix = ""
+        tags_section = content
+
+        match = section_pattern_re.fullmatch(content)
+        if match and "tags" in match.groupdict():
+            # Extract tags part (required)
+            groupdict = match.groupdict()
+            tags_section = groupdict["tags"]
+
+            # Extract prefix and suffix if present
+            prefix = groupdict.get("prefix") or ""
+            suffix = groupdict.get("suffix") or ""
+        else:
+            # Pattern didn't match or no tags group found
+            logger.warning(f"Pattern did not match in {file}, processing entire file")
+
         # Split content into individual tags
         orig_tags = tags = []
-        for chunk in RE_SEP.split(content):  # Split on commas and newlines
+        for chunk in tag_sep_re.split(tags_section):
             chunk = chunk.strip()
             if not chunk:
                 continue
             tags.append(chunk)
+
+        # Skip files with no tags
+        if not tags:
+            skipped_files += 1
+            continue
+
         original_len = len(tags)
 
         # Normalize tag format: lowercase, replace spaces with underscores, remove escaping backslashes)
@@ -289,35 +348,49 @@ def process_files(
             drop_antecedent_rank=drop_antecedent_rank,  # Don't drop implications if the antecedent has rank <= this value
         )
         implication_filtered_len = len(tags)
-        implied_instances += original_len - implication_filtered_len  # Count how many tags were filtered by implication
+        implied_instances += (
+            original_len - implication_filtered_len
+        )  # Count how many tags were filtered by implication
 
         # Remove blacklisted tags
         tags = [t for t in tags if t not in blacklist]
-        blacklist_instances += implication_filtered_len - len(tags)  # Count how many tags were filtered by blacklist
+        # Count how many tags were filtered by blacklist
+        blacklist_instances += implication_filtered_len - len(tags)
 
         # Count occurrences for statistics
         counter.update(tags)  # Count occurrences of remaining tags
-        implied_counter.update(implied)  # Count occurrences of implied tags that were removed
+        # Count occurrences of implied tags that were removed
+        implied_counter.update(implied)
 
         # Convert tag IDs back to strings
         tags = tagset_normalizer.decode(tags)
-        
+
         # Replace underscores with spaces if configured
         if not use_underscores:
             tags = [
                 t.replace("_", " ") if t not in keep_underscores else t for t in tags
             ]
-            
-        # Skip writing if no changes were made
+
+        # Skip if no changes to the tags
         if tags == orig_tags:
             skipped_files += 1
             continue
 
-        # Write the normalized tags to the output file
+        # Prepare output content
+        normalized_tags = ", ".join(tags)
+        assert suffix is not None and suffix != "None"
+        output_content = f"{prefix}{normalized_tags}{suffix}"
+
+        # Skip if no changes to the entire content
+        if output_content == content:
+            skipped_files += 1
+            continue
+
+        # Write the normalized content to the output file
         output_file = output_dir / file.relative_to(dataset_root)
         output_file.parent.mkdir(parents=True, exist_ok=True)
         with open(output_file, "wt", encoding="utf-8") as fd:
-            fd.write(", ".join(tags))
+            fd.write(output_content)
         processed_files += 1
 
     # Return statistics about the processing
@@ -340,23 +413,27 @@ def process_directory(
 ):
     """
     Process all tag files in the given directory, normalizing tags according to the provided normalizer and configuration.
-    
+
     Args:
         dataset_root: Root directory containing tag files to process
         output_dir: Directory where processed files will be written
         tagset_normalizer: Normalizer for encoding/decoding tags and handling implications
         config: Configuration dictionary with processing options
         blacklist: Set of tag IDs that should be filtered out
-        
+
     Returns:
         Dictionary with statistics about the processing operation
     """
     # Get total number of known tags
     n_tags = len(tagset_normalizer.tag_normalizer.tag2idx)
-    
+
     # Determine formatting preferences
-    use_underscores = config.get("use_underscores", False)  # Whether to keep underscores in tags
-    keep_underscores = set(config.get("keep_underscores", ()))  # Specific tags that should keep underscores regardless
+    use_underscores = config.get(
+        "use_underscores", False
+    )  # Whether to keep underscores in tags
+    keep_underscores = set(
+        config.get("keep_underscores", ())
+    )  # Specific tags that should keep underscores regardless
 
     # Configure implied tag handling
     keep_implied = config.get("keep_implied", False)  # Whether to keep implied tags
@@ -365,7 +442,7 @@ def process_directory(
         # encode(t, t) maps string tag t to ID, or returns t if it can't be mapped
         encode = tagset_normalizer.tag_normalizer.encode
         keep_implied = {encode(t, t) for t in keep_implied}
-    
+
     # Set up rank thresholds for implied tag filtering
     # Higher rank = less frequent tag
     max_antecedent_rank = n_tags + 1  # Default: keep all implications
@@ -373,7 +450,7 @@ def process_directory(
     if min_antecedent_freq >= 1.0:
         # Convert frequency threshold to rank threshold
         max_antecedent_rank = math.ceil(tag_freq_to_rank(min_antecedent_freq))
-    
+
     drop_antecedent_rank = n_tags + 1  # Default: don't drop any antecedents
     drop_antecedent_freq = config.get("drop_antecedent_freq", 0)
     if drop_antecedent_freq >= 1.0:
@@ -402,6 +479,8 @@ def process_directory(
         max_antecedent_rank=max_antecedent_rank,
         drop_antecedent_rank=drop_antecedent_rank,
         blacklist=blacklist,
+        tag_separator_regexp=config.get("tag_separator_regexp", "[,\n]"),
+        tag_section_pattern=config.get("tag_section_pattern", "(?P<tags>.*?)"),
     )
 
 
@@ -620,9 +699,15 @@ def main():
     counter = stats["counter"]
     logger.info(f"Unique tags: {len(counter)}")
     logger.info(f"Tag occurrences: {sum(counter.values())}")
-    unknown_counter = [count for t, count in counter.items() if not isinstance(t, int)]
-    logger.info(f"Unknown tags: {len(unknown_counter)}")
-    logger.info(f"Unknown tags occurrences: {sum(unknown_counter)}")
+    unknown_tags = Counter({t: c for t, c in counter.items() if not isinstance(t, int)})
+    if logging.getLogger().getEffectiveLevel() > logging.INFO:
+        unknown_tags_str = ", ".join(
+            f"{t!r}:{c}" for t, c in unknown_tags.most_common(20) if c > 1
+        )
+        logger.info(f"Unknown tags: {len(unknown_tags)} {unknown_tags_str}")
+    else:
+        logger.info(f"Unknown tags: {len(unknown_tags)}")
+    logger.info(f"Unknown tags occurrences: {sum(unknown_tags.values())}")
     logger.info(f"Removed by blacklist: {stats['blacklist_instances']}")
     logger.info(f"Removed by implication: {stats['implied_instances']}")
     if args.print_topk or args.stats_categories:

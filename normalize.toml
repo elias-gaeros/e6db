@@ -1,42 +1,115 @@
 # Tag Normalization Configuration
+#
+# This file controls how tags are processed, normalized, and filtered.
+# The tag normalizer helps standardize tags by:
+# 1. Converting aliases to canonical forms
+# 2. Filtering out implied or redundant tags
+# 3. Removing unwanted tags
+# 4. Standardizing formatting
+#
+# NOTE: All spaces in tag names are automatically converted to underscores internally.
+# When `use_underscores` is false, spaces are reintroduced before saving the result.
+# When writing patterns, aliases, or tag names in this file, you can use either:
+#   - Spaces: "rating explicit"  
+#   - Underscores: "rating_explicit"
+# Both will work the same way, as spaces are converted to underscores during processing.
+# This applies to all tag names in blacklists, aliases, regexp patterns, etc.
 
-# Include Filename Regexp: Only file matching this regexp will be treated as
-# captions. This is full-match regexps that must match the entire filename.
-# Default: r".*?\.(txt|cap.*)$"
-include_filename_regexp = ".*?\\.(txt|cap.*)$"
+# === FILE SELECTION ===
 
-# Exclude Filename Regexp: Files matching this regexp will be excluded.
-# Default: ".*samples?-prompts?.*"
+# Only process files matching this pattern
+# This is a regular expression that must match the entire filename
+# Default: matches .txt, .cap, .caption, etc. files
+include_filename_regexp = ".*?\\.(txt|cap.*|wd|jtp)$"
+
+# Skip files matching this pattern (even if they match the include pattern)
+# Default: skips files with "sample" or "prompt" in their names
 exclude_filename_regexp = ".*samples?-prompts?.*"
 
-# Use Underscores: Determines whether to use underscores or spaces in output
-# tags.
+
+# === FILE STRUCTURE ===
+
+# Regular expression pattern for separating tags in input files
+# This pattern is used to split the content of tag files into individual tags
+# Default: "[,\n]" (split on commas and newlines)
+tag_separator_regexp = "[,\\n]"
+
+# Regular expression pattern with named capture groups for extracting the tag section
+# The optional prefix and suffix are concatenated unchanged to the processed middle tag section.
+# Format: Use (?P<prefix>...), (?P<tags>...), and (?P<suffix>...) groups
+# Default: "(?P<tags>.*?)", process the entire file as tags
+#
+# The prefix and suffix can be optional - only a match the tags group is required
+# Example configuration: Process text between ||| and ]]] markers:
+#    tag_section_pattern = '''(?P<prefix>.*?\|\|\|)?(?P<tags>.*?)(?P<suffix>\]\]\].*)?'''
+tag_section_pattern = '''(?P<tags>.*?)'''
+
+
+# === TAG FORMATTING ===
+
+# Whether to use underscores or spaces in output tags
+# true = use underscores (tag_name)
+# false = use spaces (tag name)
 # Default: false (use spaces)
 use_underscores = false
 
-# Keep Implied: Whether to keep implied tags or remove them. Can also be a list
-# of tags.
+# List of specific tags where underscores should always be preserved
+# Even if use_underscores=false, these tags will keep their underscores
+keep_underscores = [
+    "rating_explicit",
+    "rating_questionable", 
+    "rating_safe",
+    "source_pony",
+    "source_furry",
+    "source_anime",
+    "source_cartoon",
+]
+
+# === TAG IMPLICATIONS ===
+
+# Whether to keep or remove implied tags
+# For example, if "dog" implies "mammal", and keep_implied=false,
+# then "mammal" would be removed when "dog" is present
+# Options:
+#   false = remove implied tags
+#   true = keep all implied tags
+#   [list of tags] = keep only these specific implied tags
 # Default: false (remove implied tags)
 keep_implied = false
 
-# Minimum Implication Frequency: tags with a number of e621 posts bellow this
-# value cause the tags it implies to be added instead of being removed.
+# Frequency threshold for reliable implications
+# Tags that appear in fewer than this many posts on e621
+# will not have their implications removed.
+# Instead, the implied tags will be kept alongside the rare tag.
+# Higher number = stricter filtering
 # Default: 0 (disabled)
 min_antecedent_freq = 200
 
-# Drop rare implication antecedents: tags with a number of e621 posts bellow
-# this values will be dropped if they imply other tags. Must be equal of bellow
-# min_antecedent_freq. These implications thus behave like aliases.
+# Frequency threshold for replacing rare tags with their implications
+# Tags with fewer than this many posts will be replaced by the tags they imply
+# This must be less than or equal to min_antecedent_freq
+# For example, if "rare_species" implies "mammal" and has fewer posts than this number,
+# "rare_species" would be removed and "mammal" kept
 # Default: 0 (disabled)
 drop_antecedent_freq = 50
 
-# Artist By Prefix: Whether to add "by_" prefix to artist tags
+# === ARTIST TAGS ===
+
+# Whether to add "by_" prefix to artist tags
+# For example, "artist_name" becomes "by_artist_name"
 # Default: true
 artist_by_prefix = true
 
-# Blacklist: A list of tags to be removed during normalization
-# These tags will be completely excluded from the output
-# Default: ["invalid tag"]
+# Whether to remove category suffixes like _(species) or _(character)
+# when they match the tag's actual category
+# This only happens if removing the suffix doesn't create a conflict
+# Default: true
+remove_parens = true
+
+# === BLACKLISTING (REMOVING UNWANTED TAGS) ===
+
+# Specific tags to completely remove during normalization
+# These tags will never appear in the output
 blacklist = [
     "invalid tag",
     "by conditional dnp",
@@ -57,65 +130,72 @@ blacklist = [
     "edit_request",
 ]
 
-# Blacklist Regular Expressions: Tags matching these regexps will be removed.
-# These are full-match regexps, so they must match the entire tag.
+# Pattern-based tag removal
+# Tags matching these patterns will be removed
+# These are full-match patterns (must match the entire tag)
+# Note: When writing patterns, remember that spaces in tags are converted to underscores
+# internally, so spaces are also replaced by underscores in these regexp.
 blacklist_regexp = [
     "(\\d+s?|\\d+:\\d+)", # Numbers, years and aspect ratio
     ".*?_at_source",
 ]
 
-# Blacklist Implied: Whether to also blacklist tags implied by blacklisted tags
+# Whether to also remove tags that are implied by blacklisted tags
+# For example, if "bad_tag" implies "general_tag" and blacklist_implied=true,
+# then blacklisting "bad_tag" would also remove "general_tag"
 # Default: true
 blacklist_implied = true
 
-# Blacklist Categories: Entire categories of tags to be removed
-# Common categories include "artist", "character", "copyright", "general", "meta", "species", "pool"
+# Entire categories of tags to remove
+# Categories in e621: "artist", "character", "copyright", "general", 
+# "meta", "species", "pool"
 blacklist_categories = ["pool"]
 
-# Keep Underscores: List of tags where underscores should be preserved
-# By default, underscores are replaced with spaces unless specified here
-keep_underscores = [
-    "rating_explicit",
-    "rating_questionable",
-    "rating_safe",
-    "source_pony",
-    "source_furry",
-    "source_anime",
-    "source_cartoon",
-]
+# === ALIAS HANDLING ===
 
-# Remove parentheses suffixes that matches the tag's category like _(species) or
-# _(character) if it doesn't conflict with another tag 
-# (when on_alias_conflict="ignore") 
-# Default: true
-remove_parens = true
-
-# On Alias Conflict: How to handle conflicts when creating aliases
-# Options: "silent", "overwrite", "overwrite_rarest", "warn", "raise"
-# Default: "ignore" meaning do not modify the alias
-on_alias_conflict = "ignore"
-
-# Remove Aliases: unregister existing aliases. This can be used to keep tags
-# aliased to "invalid tag" or specialize the meaning of an already aliased tag.
+# Tags to remove from the alias system
+# This prevents specific tags from being normalized to something else
+# Useful for keeping tags separate when they would otherwise be merged
 remove_aliases = []
 
-# Aliases: Define tag aliases (alternative names for the same tag)
-# The key is the alias, and the value is the target tag
+# How to handle conflicts when creating aliases for `[alias]` and 
+# This happens when the alias already maps to a normalized form different
+# than the new one.
+# Options:
+#   "ignore" = Don't create the new alias if there's a conflict (keep existing mapping)
+#   "overwrite" = Replace the existing mapping with the new one
+#   "overwrite_rarest" = Keep the mapping to the more frequent tag (lower ID number)
+#   "warn" = Log a warning then ignore
+#   "raise" = Stop with an error
+# Default: "warn"
+on_alias_conflict = "warn"
+
+# === TAG MAPPINGS ===
+
+# Define custom aliases (alternate names for the same tag)
+# Format: alias = "canonical_form"
+# For example, "explicit = rating_explicit" means the tag "explicit"
+# will be converted to "rating_explicit" during processing
+# Note: You can use spaces or underscores interchangeably in both the alias name and value
+# For example: "score explicit" = "rating explicit" works the same as "score_explicit" = "rating_explicit"
 [aliases]
 explicit = "rating_explicit"
 score_explicit = "rating_explicit"
 score_safe = "rating_safe"
 score_questionable = "rating_questionable"
 
-# Aliases Overrides: Similar to aliases, but can override existing tag meanings
-# Use this carefully as it can change the semantics of existing tags
+# Aliases that override existing mappings
+# Use this carefully as it can change the meaning of existing tags
+# These take precedence over regular aliases
 [aliases_overrides]
 safe = "rating_safe"
 questionable = "rating_questionable"
 
-# Renames: Specify tags to be renamed in the output
-# This also causes them to be recognized as aliases in the input (for idempotency)
-# The key is the original tag name, and the value is the new name
+# Specify tags to rename in the output
+# This changes the canonical form of a tag
+# The tag will still be recognized in all its forms, but will be output
+# using the new name specified here
+# Format: original_name = "new_name"
 [renames]
 domestic_cat = "cat"
 domestic_dog = "dog"

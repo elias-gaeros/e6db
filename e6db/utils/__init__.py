@@ -323,9 +323,11 @@ class TagNormalizer:
                     raise ValueError(msg)
                 elif on_conflict == "warn":
                     logger.warning(msg)
-                elif on_conflict == "overwrite_rarest" and to_tid > conflict:
-                    # Skip if the existing tag has a lower id (more frequent)
                     continue
+                elif on_conflict == "overwrite_rarest":
+                    if to_tid > conflict:
+                        # Skip if the existing tag has a lower id (more frequent)
+                        continue
                 elif on_conflict != "overwrite":
                     # Skip if we're not explicitly overwriting
                     continue
@@ -403,7 +405,7 @@ class TagNormalizer:
             
         return res
 
-    def map_outputs(self, mapfun: OutMapFun) -> "TagNormalizer":
+    def map_outputs(self, mapfun: OutMapFun, ensure_indepotency=False) -> "TagNormalizer":
         """
         Create a new TagNormalizer with transformed canonical tag strings.
         
@@ -413,13 +415,29 @@ class TagNormalizer:
         Args:
             mapfun: A function that takes (tag_string, tag_id) and returns a new
                    canonical string for that id
-                   
+            ensure_indepotency: Whether to ensure that the mapping function is idempotent 
+                    by ignoring mappings that don't have a reverse input mapping.
+                    To use this, you first need to add conflict free input mappings 
+                    that are inverse of the output mappings.
         Returns:
             A new TagNormalizer with the transformed canonical strings
         """
-        # Apply the mapping function to each canonical tag
-        idx2tag = [mapfun(t, i) for i, t in enumerate(self.idx2tag)]
-        
+
+        if ensure_indepotency:
+            idx2tag = []
+            tag2idx = self.tag2idx
+            for i, t in enumerate(self.idx2tag):
+                new_t = mapfun(t, i)
+                if new_t != t:
+                    # Check for an input mapping of the new tag
+                    new_tid = tag2idx.get(new_t)
+                    if new_tid != i: 
+                        raise ValueError(f"Failed to map {t} -> {new_t}: conflict with {self.idx2tag[new_tid]}")
+                idx2tag.append(new_t)
+        else:
+            # Apply the mapping function to each canonical tag
+            idx2tag = [mapfun(t, i) for i, t in enumerate(self.idx2tag)]
+            
         # Create a new normalizer with the transformed idx2tag
         return type(self)((self.tag2idx, idx2tag, self.tag_categories))
 
@@ -504,11 +522,10 @@ class TagSetNormalizer:
                 # Check for conflicts with existing mappings
                 conflict = implications_rej.get(new_tag_string, implied_ids)
                 if conflict != implied_ids:
-                    msg = f"mapping {tag_string!r}->{implied_ids} conflicts with previous mapping {tag_string!r}->{conflict}."
                     if on_conflict == "raise":
-                        raise ValueError(msg)
+                        raise ValueError(f"mapping {tag_string!r}->{implied_ids} conflicts with previous mapping {tag_string!r}->{conflict}.")
                     elif on_conflict == "warn":
-                        warnings.warn(msg)
+                        warnings.warn(f"mapping {tag_string!r}->{implied_ids} conflicts with previous mapping {tag_string!r}->{conflict}.")
                     elif on_conflict != "overwrite":
                         continue
                         
@@ -519,7 +536,7 @@ class TagSetNormalizer:
         res = type(self)((tag_normalizer, self.implications, implications_rej))
         return res
 
-    def map_outputs(self, mapfun: OutMapFun) -> "TagSetNormalizer":
+    def map_outputs(self, mapfun: OutMapFun, ensure_indepotency=False) -> "TagSetNormalizer":
         """
         Create a new TagSetNormalizer with transformed canonical tag strings.
         
@@ -533,7 +550,7 @@ class TagSetNormalizer:
             A new TagSetNormalizer with the transformed canonical strings
         """
         # Transform only the tag normalizer component
-        tag_normalizer = self.tag_normalizer.map_outputs(mapfun)
+        tag_normalizer = self.tag_normalizer.map_outputs(mapfun, ensure_indepotency=ensure_indepotency)
         
         # Create a new normalizer with the transformed tag normalizer
         return type(self)((tag_normalizer, self.implications, self.implications_rej))
@@ -606,7 +623,7 @@ class TagSetNormalizer:
         implied = set()  # Set to track all implied tags encountered
         res = dict()  # dict as a cheap ordered set to maintain insertion order while removing duplicates
         
-        # Process all tags and their implications
+        # Gather tag implications
         while stack:
             tag = stack.pop()
             if isinstance(tag, int):
@@ -626,7 +643,7 @@ class TagSetNormalizer:
                     # If tag is uncommon (high rank), keep its implications and consider dropping the tag itself
                     # Add implied tags to stack to ensure they're included in result
                     stack.extend(consequents)
-                    # If tag is very rare (higher than drop threshold), don't include it in result
+                    # If tag is very rare (higher rank than drop threshold), don't include it in result
                     # This prevents keeping tags that only exist to imply other tags
                     if antecedent_rank >= drop_antecedent_rank:
                         continue
