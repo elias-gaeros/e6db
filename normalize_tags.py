@@ -216,6 +216,121 @@ RE_SEP = re.compile(r"[,\n]")  # Split on commas and newlines
 RE_ESCAPES = re.compile(r"\\+?(?=[():])")  # Match backslash escapes before :()
 
 
+def process_files(
+    files: list[Path],
+    output_dir: Path,
+    dataset_root: Path,
+    tagset_normalizer: TagSetNormalizer,
+    use_underscores: bool,
+    keep_underscores: set,
+    keep_implied,
+    max_antecedent_rank: int,
+    drop_antecedent_rank: int,
+    blacklist: set = set(),
+):
+    """
+    Process a list of tag files, normalizing tags according to the provided parameters.
+    
+    Args:
+        files: List of files to process
+        output_dir: Directory where processed files will be written
+        dataset_root: Root directory containing tag files (for path calculation)
+        tagset_normalizer: Normalizer for encoding/decoding tags and handling implications
+        use_underscores: Whether to keep underscores in tags
+        keep_underscores: Specific tags that should keep underscores regardless
+        keep_implied: Whether to keep implied tags (bool or set of tag IDs)
+        max_antecedent_rank: Only consider implications from tags with rank <= this value
+        drop_antecedent_rank: Don't drop antecedent tags with rank <= this value
+        blacklist: Set of tag IDs that should be filtered out
+        
+    Returns:
+        Dictionary with statistics about the processing operation
+    """
+    logger.info("💾 Processing %d files...", len(files))
+
+    # Initialize statistics counters
+    counter = Counter()  # Count occurrences of each tag
+    implied_counter = Counter()  # Count occurrences of implied tags that were removed
+    processed_files = 0  # Number of files that were modified
+    skipped_files = 0  # Number of files that didn't need changes
+    blacklist_instances = 0  # Number of tag instances removed due to blacklist
+    implied_instances = 0  # Number of tag instances removed due to implications
+    
+    # Process each file
+    for file in tqdm(files):
+        try:
+            # Read the tag file content
+            with open(file, "rt", encoding="utf-8") as fd:
+                content = fd.read()
+        except ValueError as e:
+            logging.warning('Failed to read "%s": %s', file, e)
+            continue
+
+        # Split content into individual tags
+        orig_tags = tags = []
+        for chunk in RE_SEP.split(content):  # Split on commas and newlines
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+            tags.append(chunk)
+        original_len = len(tags)
+
+        # Normalize tag format: lowercase, replace spaces with underscores, remove escaping backslashes)
+        tags = [RE_ESCAPES.sub("", t.lower().replace(" ", "_")) for t in tags]
+
+        # Encode tags to integer IDs and filter out implied tags based on configuration
+        # This returns two lists:
+        # 1. tags: the remaining tags after filtering implications
+        # 2. implied: the tags that were filtered out due to being implied
+        tags, implied = tagset_normalizer.encode(
+            tags,
+            keep_implied=keep_implied,  # Whether to keep tags that are implied by other tags
+            max_antecedent_rank=max_antecedent_rank,  # Only consider implications from tags with rank <= this value
+            drop_antecedent_rank=drop_antecedent_rank,  # Don't drop implications if the antecedent has rank <= this value
+        )
+        implication_filtered_len = len(tags)
+        implied_instances += original_len - implication_filtered_len  # Count how many tags were filtered by implication
+
+        # Remove blacklisted tags
+        tags = [t for t in tags if t not in blacklist]
+        blacklist_instances += implication_filtered_len - len(tags)  # Count how many tags were filtered by blacklist
+
+        # Count occurrences for statistics
+        counter.update(tags)  # Count occurrences of remaining tags
+        implied_counter.update(implied)  # Count occurrences of implied tags that were removed
+
+        # Convert tag IDs back to strings
+        tags = tagset_normalizer.decode(tags)
+        
+        # Replace underscores with spaces if configured
+        if not use_underscores:
+            tags = [
+                t.replace("_", " ") if t not in keep_underscores else t for t in tags
+            ]
+            
+        # Skip writing if no changes were made
+        if tags == orig_tags:
+            skipped_files += 1
+            continue
+
+        # Write the normalized tags to the output file
+        output_file = output_dir / file.relative_to(dataset_root)
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_file, "wt", encoding="utf-8") as fd:
+            fd.write(", ".join(tags))
+        processed_files += 1
+
+    # Return statistics about the processing
+    return dict(
+        counter=counter,  # Counter for each remaining tag
+        implied_counter=implied_counter,  # Counter for each implied tag that was removed
+        processed_files=processed_files,  # Number of files that were modified
+        skipped_files=skipped_files,  # Number of files that didn't need changes
+        blacklist_instances=blacklist_instances,  # Number of tag instances removed due to blacklist
+        implied_instances=implied_instances,  # Number of tag instances removed due to implications
+    )
+
+
 def process_directory(
     dataset_root: Path,
     output_dir: Path,
@@ -274,88 +389,19 @@ def process_directory(
     # Get all files to process based on configuration patterns
     logger.debug(f"🔍 Gathering file list...")
     files = walk_directory(dataset_root, config)
-    logger.info("💾 Processing %d files...", len(files))
 
-    # Initialize statistics counters
-    counter = Counter()  # Count occurrences of each tag
-    implied_counter = Counter()  # Count occurrences of implied tags that were removed
-    processed_files = 0  # Number of files that were modified
-    skipped_files = 0  # Number of files that didn't need changes
-    blacklist_instances = 0  # Number of tag instances removed due to blacklist
-    implied_instances = 0  # Number of tag instances removed due to implications
-    
-    # Process each file
-    for file in tqdm(files):
-        try:
-            # Read the tag file content
-            with open(file, "rt", encoding="utf-8") as fd:
-                content = fd.read()
-        except ValueError as e:
-            logging.warning('Failed to read "%s": %s', file, e)
-            continue
-
-        # Split content into individual tags
-        orig_tags = tags = []
-        for chunk in RE_SEP.split(content):  # Split on commas and newlines
-            chunk = chunk.strip()
-            if not chunk:
-                continue
-            tags.append(chunk)
-        original_len = len(tags)
-
-        # Normalize tag format: lowercase, replace spaces with underscores, remove escaping backslashes
-        tags = [RE_ESCAPES.sub("", t.lower().replace(" ", "_")) for t in tags]
-
-        # Encode tags to integer IDs and filter out implied tags based on configuration
-        # This returns two lists:
-        # 1. tags: the remaining tags after filtering implications
-        # 2. implied: the tags that were filtered out due to being implied
-        tags, implied = tagset_normalizer.encode(
-            tags,
-            keep_implied=keep_implied,  # Whether to keep tags that are implied by other tags
-            max_antecedent_rank=max_antecedent_rank,  # Only consider implications from tags with rank <= this value
-            drop_antecedent_rank=drop_antecedent_rank,  # Don't drop implications if the antecedent has rank <= this value
-        )
-        implication_filtered_len = len(tags)
-        implied_instances += original_len - implication_filtered_len  # Count how many tags were filtered by implication
-
-        # Remove blacklisted tags
-        tags = [t for t in tags if t not in blacklist]
-        blacklist_instances += implication_filtered_len - len(tags)  # Count how many tags were filtered by blacklist
-
-        # Count occurrences for statistics
-        counter.update(tags)  # Count occurrences of remaining tags
-        implied_counter.update(implied)  # Count occurrences of implied tags that were removed
-
-        # Convert tag IDs back to strings
-        tags = tagset_normalizer.decode(tags)
-        
-        # Replace underscores with spaces if configured
-        if not use_underscores:
-            tags = [
-                t.replace("_", " ") if t not in keep_underscores else t for t in tags
-            ]
-            
-        # Skip writing if no changes were made
-        if tags == orig_tags:
-            skipped_files += 1
-            continue
-
-        # Write the normalized tags to the output file
-        output_file = output_dir / file.relative_to(dataset_root)
-        output_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(output_file, "wt", encoding="utf-8") as fd:
-            fd.write(", ".join(tags))
-        processed_files += 1
-
-    # Return statistics about the processing
-    return dict(
-        counter=counter,  # Counter for each remaining tag
-        implied_counter=implied_counter,  # Counter for each implied tag that was removed
-        processed_files=processed_files,  # Number of files that were modified
-        skipped_files=skipped_files,  # Number of files that didn't need changes
-        blacklist_instances=blacklist_instances,  # Number of tag instances removed due to blacklist
-        implied_instances=implied_instances,  # Number of tag instances removed due to implications
+    # Process all files and get statistics
+    return process_files(
+        files=files,
+        output_dir=output_dir,
+        dataset_root=dataset_root,
+        tagset_normalizer=tagset_normalizer,
+        use_underscores=use_underscores,
+        keep_underscores=keep_underscores,
+        keep_implied=keep_implied,
+        max_antecedent_rank=max_antecedent_rank,
+        drop_antecedent_rank=drop_antecedent_rank,
+        blacklist=blacklist,
     )
 
 
